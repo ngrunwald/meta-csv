@@ -312,12 +312,15 @@
 
 (defn normalize-fields-schema
   [schema]
-  (when schema
-    (mapv (fn [x] (cond
-                    (= x :...) {}
-                    (keyword? x) {:field x}
-                    :else (normalize-field x)))
-          schema)))
+  (cond
+    (sequential? schema) (mapv (fn [x] (cond
+                                         (= x :...) {}
+                                         (keyword? x) {:field x}
+                                         :else (normalize-field x)))
+                               schema)
+    (map? schema) schema
+    (nil? schema) nil
+    :else nil))
 
 (defn normalize-csv-options
   [{:keys [field-names-fn fields] :as opts}]
@@ -331,6 +334,24 @@
         (> (.length v) 0)
         (keyword? v) true
         :else false))
+
+(defn override-schema
+  [base override]
+  (reduce
+   (fn [acc [k v]]
+     (let [idx (if (int? k)
+                 k
+                 (first (remove nil?
+                                (map-indexed (fn [idx {:keys [field]}]
+                                               (when (and field
+                                                          (or (= field k)
+                                                              (= field (keyword k))))
+                                                 idx))
+                                             base))))]
+       (if idx
+         (update acc idx merge v)
+         acc)))
+   (into [] base) override))
 
 (defn guess-spec
   "This function takes a source of csv lines (either a *Reader*, *InputStream* or *String* URI)
@@ -373,6 +394,10 @@ for the spec. Recognised options are:
           skip 0}
      :as opts}]
    (let [norm-opts (normalize-csv-options opts)
+         fields-seq (when (sequential? (:fields norm-opts))
+                      (:fields norm-opts))
+         override-fields (when (map? (:fields norm-opts))
+                           (:fields norm-opts))
          [^BufferedReader rdr clean-rdr enc bom-name] (get-reader uri encoding bom)]
        (try
          (when (and skip (> skip 0)) (dotimes [_ skip] (.readLine rdr)))
@@ -389,15 +414,15 @@ for the spec. Recognised options are:
                vec-output? (or (and (not given-field-names?) (false? header?))
                                (and (not given-field-names?) (not guessed-header) (not header?)))
                fnames (when-not vec-output?
-                        (if (and fields (every? #(or (:field %) (nil? %)) (:fields norm-opts)))
-                          (map :field (:fields norm-opts))
+                        (if (and fields-seq (every? #(or (:field %) (nil? %)) fields-seq))
+                          (map :field fields-seq)
                           (when (or header? guessed-header given-field-names?)
                             (let [raw-headers (:possible-header analysis)
                                   fname-fn (cond
                                              field-names-fn field-names-fn
                                              (false? header?) (if (every? keyword?
                                                                           (remove nil?
-                                                                                  (map :field (:fields norm-opts))))
+                                                                                  (map :field fields-seq)))
                                                                 keyword
                                                                 identity)
                                              (not (some (fn [col]
@@ -409,21 +434,21 @@ for the spec. Recognised options are:
                                     :let [trimmed-header (if (not (empty? raw-header))
                                                            (str/trim raw-header)
                                                            ::null)
-                                          given-field (nth (:fields norm-opts) idx ::not-found)
+                                          given-field (nth fields-seq idx ::not-found)
                                           given-field-label (:field given-field ::not-found)]]
                                 (cond
                                   (and given-field
                                        (not (#{{} ::not-found} given-field))
                                        (not (defined-name? (:field given-field)))) (:field given-field)
-                                  (= given-field ::not-found) nil
                                   (and (or (= trimmed-header ::null) (false? header?))
                                        (= given-field-label ::not-found)) (fname-fn (str "col" idx))
-                                  trimmed-header (fname-fn trimmed-header)))))))
+                                  trimmed-header (fname-fn trimmed-header)
+                                  (= given-field ::not-found) nil))))))
                full-schema (for [idx (range (max ((fnil count []) (:fields norm-opts))
                                                  ((fnil count []) fnames)
                                                  ((fnil count []) guessed-schema)))]
                              (let [guessed-type (nth guessed-schema idx ::not-found)
-                                   given-field (nth (:fields norm-opts) idx ::not-found)
+                                   given-field (nth fields-seq idx ::not-found)
                                    label (nth fnames idx ::not-found)]
                                (if (or (nil? label) (nil? given-field))
                                  nil
@@ -432,8 +457,11 @@ for the spec. Recognised options are:
                                      (cond-> (and guess-types? (not= guessed-type ::not-found))
                                        (merge guessed-type))
                                      (cond-> (not= given-field ::not-found) (merge given-field))
-                                     (cond-> (not (:type given-field)) (assoc :type :string))))))]
-           {:fields full-schema :delimiter (or delimiter guessed-delimiter) :bom bom-name
+                                     (cond-> (not (:type given-field)) (assoc :type :string))))))
+               schema-with-override (if (map? override-fields)
+                                      (override-schema full-schema override-fields)
+                                      full-schema)]
+           {:fields schema-with-override :delimiter (or delimiter guessed-delimiter) :bom bom-name
             :encoding enc :skip-analysis? true :header? (if (nil? header?) guessed-header header?)
             :quoted? guessed-quote})
          (finally
@@ -510,7 +538,7 @@ for the spec. Recognised options are:
        (try
          (let [given-field-names? (some boolean (map :field (:fields full-spec)))
                named-fields? (or header? given-field-names?)
-               csv-opts (merge full-spec (dissoc norm-opts :fields) {:named-fields? named-fields?})
+               csv-opts (merge full-spec {:named-fields? named-fields?})
                _ (when (and skip (> skip 0)) (dotimes [_ skip] (.readLine rdr)))
                csv-seq (parse-csv rdr clean-rdr csv-opts)]
            csv-seq)
