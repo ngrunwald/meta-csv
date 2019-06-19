@@ -3,6 +3,7 @@
             [clojure.string :as str]
             [clojure.spec.alpha :as s])
   (:import [de.siegmar.fastcsv.reader CsvReader CsvRow CsvParser]
+           [de.siegmar.fastcsv.writer CsvWriter]
            [java.nio.charset Charset]
            [com.ibm.icu.text CharsetDetector]
            [java.io Reader BufferedReader]))
@@ -24,28 +25,33 @@
              :coercer #(Long/parseLong (str/trim %))
              :priority 0}
    :double  {:predicate float-string?
-             :coercer #(Double/parseDouble (str/trim %))
+             :coercer #(-> %
+                           (str/trim)
+                           (str/replace #"[\p{Sc}\s]+" "")
+                           (cond-> (not (re-find #"\." %)) (str/replace #"," "."))
+                           (cond-> (re-find #"\." %) (str/replace #"\,+" ""))
+                           (Double/parseDouble))
              :priority 1}
    :percent {:predicate percent-string?
              :coercer (fn [s] (let [num (re-find #"-?\d[\d\p{Zs}']*([\.,][\d\p{Zs}']*\d)?" (str/trim s))]
                                 (/ num 100.0)))
              :priority 2}
    :string  {:predicate string?
-             :coercer identity
+             :coercer str/trim
              :priority 3}})
 
-(def other-types
+(def ^:no-doc other-types
   {:float   {:predicate float-string?
              :coercer #(Float/parseFloat (str/trim %))}
    :integer {:predicate integer-string?
              :coercer #(Integer/parseInt (str/trim %))}})
 
-(def synonym-types
+(def ^:no-doc synonym-types
   {:int (:integer other-types)
    :str (:string base-types)})
 
-(def guessable-csv-types base-types)
-(def csv-types (merge base-types other-types synonym-types))
+(def ^:no-doc guessable-csv-types base-types)
+(def ^:no-doc csv-types (merge base-types other-types synonym-types))
 
 (def ^:no-doc available-charsets (into #{} (.keySet (Charset/availableCharsets))))
 
@@ -122,7 +128,7 @@
   ([src encoding] (get-reader src encoding nil))
   ([src] (get-reader src nil nil)))
 
-(defmacro ^:private sdef-enum
+(defmacro ^:private ^:no-doc sdef-enum
   [nam enum]
   `(s/def ~nam ~(eval enum)))
 
@@ -131,8 +137,8 @@
 (s/def :meta-csv.core.field/read-fn fn?)
 (s/def :meta-csv.core.field/write-fn fn?)
 
-(s/def ::field-definition (s/keys :req-un [:meta-csv.core.field/field]
-                                  :opt-un [:meta-csv.core.field/type
+(s/def ::field-definition (s/keys :opt-un [:meta-csv.core.field/field
+                                           :meta-csv.core.field/type
                                            :meta-csv.core.field/read-fn
                                            :meta-csv.core.field/write-fn]))
 (s/def ::fields-definition-list (s/coll-of ::field-definition :min-count 1))
@@ -146,9 +152,6 @@
       (if-let [{:keys [type]} (first todo)]
         (let [v (get line idx)
               {:keys [predicate]} (csv-types type)]
-          (def p predicate)
-          (def t type)
-          (def td todo)
           (if (#{:string :str} type)
             (recur (rest todo) (inc idx))
             (if (predicate v)
@@ -210,29 +213,35 @@
     reader))
 
 (defn row->clj
-  [^CsvRow row {:keys [fields field-names-fn named-fields? skip]
+  [^CsvRow row {:keys [fields field-names-fn named-fields? skip null]
                 :or {skip 0}}]
-  (loop [todo fields
-         row-idx 0
-         idx 0
-         acc (if named-fields? (transient {}) (transient []))]
-    (if-let [{:keys [field type skip? read-fn]} (first todo)]
-      (if skip?
-        (recur (rest todo) (inc row-idx) idx acc)
-        (let [kname (if named-fields? (field-names-fn field) idx)
-              ^String v (.getField row idx)
-              {:keys [coercer]} (type csv-types)
-              coerced (if (and v (not (.isEmpty v)))
-                        (coercer v)
-                        nil)
-              transformed (when coerced (read-fn coerced))]
-          (recur (rest todo)
-                 (inc row-idx)
-                 (inc idx)
-                 (assoc! acc kname transformed))))
-      (with-meta
-        (persistent! acc)
-        {::original-line-number (+ skip (.getOriginalLineNumber row))}))))
+  (try
+    (loop [todo fields
+          row-idx 0
+          idx 0
+          acc (if named-fields? (transient {}) (transient []))]
+     (if-let [{:keys [field type skip? read-fn]} (first todo)]
+       (if skip?
+         (recur (rest todo) (inc row-idx) idx acc)
+         (let [kname (if named-fields? (field-names-fn field) idx)
+               ^String v (.getField row idx)
+               filter-v (if (and null v (re-find null v)) nil v)
+               {:keys [coercer]} (type csv-types)
+               coerced (if (and filter-v (not (.isEmpty filter-v)))
+                         (coercer v)
+                         nil)
+               transformed (when coerced (read-fn coerced))]
+           (recur (rest todo)
+                  (inc row-idx)
+                  (inc idx)
+                  (assoc! acc kname transformed))))
+       (with-meta
+         (persistent! acc)
+         {::original-line-number (+ skip (.getOriginalLineNumber row))})))
+    (catch Exception e
+      (throw (ex-info (format "Error reading row %d" (+ skip (.getOriginalLineNumber row)))
+                      {:line-number (+ skip (.getOriginalLineNumber row))}
+                      e)))))
 
 (defn ^:no-doc parse-fields
   [lines delimiter]
@@ -310,7 +319,7 @@
       (cond-> (nil? read-fn) (assoc :read-fn default-read-fn))
       (cond-> (nil? write-fn) (assoc :write-fn default-write-fn))))
 
-(defn normalize-fields-schema
+(defn ^:no-doc normalize-fields-schema
   [schema]
   (cond
     (sequential? schema) (mapv (fn [x] (cond
@@ -322,20 +331,20 @@
     (nil? schema) nil
     :else nil))
 
-(defn normalize-csv-options
+(defn ^:no-doc normalize-csv-options
   [{:keys [field-names-fn fields] :as opts}]
   (-> opts
       (cond-> (not field-names-fn) (assoc :field-names-fn identity))
       (cond-> fields (assoc :fields (normalize-fields-schema (:fields opts))))))
 
-(defn defined-name?
+(defn ^:no-doc defined-name?
   [v]
   (cond (string? v)
         (> (.length v) 0)
         (keyword? v) true
         :else false))
 
-(defn override-schema
+(defn ^:no-doc override-schema
   [base override]
   (reduce
    (fn [acc [k v]]
@@ -516,7 +525,7 @@ for the spec. Recognised options are:
     {:keys [header? field-names-fn fields encoding
             guess-types?
             limit skip-analysis?
-            bom skip]
+            bom skip null]
      :or {guess-types? true
           skip 0}
      :as opts}]
@@ -546,3 +555,36 @@ for the spec. Recognised options are:
            (clean-rdr rdr)
            (throw e)))))
   ([uri] (read-csv uri {})))
+
+(defn write-csv
+  [input data {:keys [encoding fields delimiter headers?]
+               :or {encoding "utf-8"
+                    delimiter \;}
+               :as opts}]
+  (let [norm-fields (normalize-fields-schema fields)
+        named-fields? (map? (first fields))
+        given-header-fields (when (every? :field norm-fields)
+                              (map :field norm-fields))
+        extracted-header-fields (when (map? fields)
+                                  (sort-by :field (map (fn [k v] (assoc v :field k)) fields)))
+        actual-headers (or given-header-fields extracted-header-fields)
+        [writer clean-writer] (if (instance? java.io.Writer input)
+                                [input (constantly true)]
+                                (let [wrt (io/writer input :encoding encoding)]
+                                  [wrt #(.close wrt)]))
+
+        with-headers? (if (not (nil? headers?))
+                        headers?
+                        (boolean actual-headers))
+        process-row (if named-fields?
+                        (fn [r]
+                          (reduce (fn [acc {:keys [field key]}]
+                                    ())
+                                  (transient {}) )))
+        csv-writer (CsvWriter.)]
+    (.setFieldSeparator delimiter)
+    (let [appender (.append csv-writer writer)]
+      (when with-headers?
+        (.appendLine appender (map name actual-headers)))
+      (doseq [line data]
+        (.appendLine appender data)))))
