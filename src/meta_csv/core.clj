@@ -466,7 +466,7 @@ for the spec. Recognised options are:
                                      (cond-> (and guess-types? (not= guessed-type ::not-found))
                                        (merge guessed-type))
                                      (cond-> (not= given-field ::not-found) (merge given-field))
-                                     (cond-> (not (:type given-field)) (assoc :type :string))))))
+                                     (update :type #(if (keyword? %) % :string))))))
                schema-with-override (if (map? override-fields)
                                       (override-schema full-schema override-fields)
                                       full-schema)]
