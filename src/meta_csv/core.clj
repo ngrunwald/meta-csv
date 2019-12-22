@@ -35,7 +35,8 @@
                            (Double/parseDouble))
              :priority 1}
    :percent {:predicate percent-string?
-             :coercer (fn [s] (let [num (re-find #"-?\d[\d\p{Zs}']*([\.,][\d\p{Zs}']*\d)?" (str/trim s))]
+             :coercer (fn [s] (let [[num-str] (re-find #"-?\d[\d\p{Zs}']*([\.,][\d\p{Zs}']*\d)?" (str/trim s))
+                                    num (Double/parseDouble num-str)]
                                 (/ num 100.0)))
              :priority 2}
    :string  {:predicate string?
@@ -68,7 +69,8 @@
         (if (available-charsets encoding)
           encoding
           "utf-8")))
-    (catch Exception e "utf-8")))
+    (catch Exception _
+      "utf-8")))
 
 (def ^:no-doc boms
   {[(byte -1) (byte -2)] [:utf16-le 2]
@@ -298,7 +300,7 @@
             fields-schema (guess-types (rest seg-lines))
             has-header? (is-header? (first seg-lines) fields-schema)
             quoted? (is-quoted? lines delimiter)]
-        (if (instance? Reader uri)
+        (when (instance? Reader uri)
           (let [^Reader typed-rdr uri]
             (.reset typed-rdr)))
         {:delimiter delimiter :fields fields-schema :header? has-header? :quoted? quoted?
@@ -442,7 +444,7 @@ for the spec. Recognised options are:
                                                             (re-find #"[\s':\\/@\(\)]" col))) raw-headers)) keyword
                                              :else identity)]
                               (for [[idx raw-header] (map-indexed (fn [idx v] [idx v]) raw-headers)
-                                    :let [trimmed-header (if (not (empty? raw-header))
+                                    :let [trimmed-header (if (seq raw-header)
                                                            (str/trim raw-header)
                                                            ::null)
                                           given-field (nth fields-seq idx ::not-found)
