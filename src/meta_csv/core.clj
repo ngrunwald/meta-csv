@@ -22,7 +22,9 @@
 
 (def base-types
   {:long    {:predicate integer-string?
-             :coercer #(Long/parseLong (str/trim %))
+             :coercer #(let [clean (str/trim %)]
+                         (when (> (count clean) 0)
+                           (Long/parseLong clean)))
              :priority 0}
    :double  {:predicate float-string?
              :coercer #(-> %
