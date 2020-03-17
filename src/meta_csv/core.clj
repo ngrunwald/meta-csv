@@ -18,7 +18,7 @@
 
 (defn ^:no-doc percent-string?
   [s]
-  (boolean (re-matches #"-?\d+([\.,]\d+)?\s*%" (str/trim s))))
+  (boolean (re-matches #"-?\d+([\.,]\d+)?\s*%\s*$" (str/trim s))))
 
 (def base-types
   {:long    {:predicate integer-string?
@@ -79,6 +79,12 @@
    [(byte -1) (byte -2) (byte 0) (byte 0)] [:utf32-le 4]
    [(byte 0) (byte 0) (byte -2) (byte -1)] [:utf32-be 4]
    [] [:none 0]})
+
+(def ^:no-doc bom-names
+  (reduce (fn
+            [acc [_ [bom-name _]]]
+            (conj acc bom-name))
+          #{} boms))
 
 (def ^:no-doc bom-sizes
   (reduce (fn
@@ -141,10 +147,17 @@
 (s/def :meta-csv.core.field/read-fn fn?)
 (s/def :meta-csv.core.field/write-fn fn?)
 
-(s/def ::field-definition (s/keys :opt-un [:meta-csv.core.field/field
-                                           :meta-csv.core.field/type
-                                           :meta-csv.core.field/read-fn
-                                           :meta-csv.core.field/write-fn]))
+
+(def skip-fields #{:... :_})
+(sdef-enum :meta-csv.core.field/skip skip-fields)
+
+(s/def ::field-definition (s/or
+                           :full-spec (s/keys :opt-un [:meta-csv.core.field/field
+                                                       :meta-csv.core.field/type
+                                                       :meta-csv.core.field/read-fn
+                                                       :meta-csv.core.field/write-fn])
+                           :field-name :meta-csv.core.field/field
+                           :skip-field :meta-csv.core.field/skip))
 (s/def ::fields-definition-list (s/coll-of ::field-definition :min-count 1))
 
 (defn ^:no-doc is-header?
@@ -366,6 +379,44 @@
          acc)))
    (into [] base) override))
 
+(s/def :meta-csv.core.reader-option/header? boolean?)
+(s/def :meta-csv.core.reader-option/sample-size integer?)
+(s/def :meta-csv.core.reader-option/guess-types boolean?)
+(s/def :meta-csv.core.reader-option/skip integer?)
+
+(s/def :meta-csv.core.reader-option/fields ::fields-definition-list)
+
+(sdef-enum :meta-csv.core.reader-option/encoding (into #{} (map str/lower-case available-charsets)))
+(sdef-enum :meta-csv.core.reader-option/bom bom-names)
+
+(s/def :meta-csv.core.reader-option/field-names-fn fn?)
+
+(s/def :meta-csv.core.reader-option/delimiter #(instance? Character %))
+
+(s/def ::guess-spec-args (s/keys :opt-un [:meta-csv.core.reader-option/header?
+                                          :meta-csv.core.reader-option/sample-size
+                                          :meta-csv.core.reader-option/guess-types
+                                          :meta-csv.core.reader-option/skip
+                                          :meta-csv.core.reader-option/fields
+                                          :meta-csv.core.reader-option/encoding
+                                          :meta-csv.core.reader-option/bom
+                                          :meta-csv.core.reader-option/field-names-fn
+                                          :meta-csv.core.reader-option/delimiter]))
+
+(s/def ::csv-source (s/or :java-reader #(instance? Reader %)
+                          :java-input-stream #(instance? java.io.InputStream %)
+                          :uri string?))
+
+(s/def :meta-csv.core.reader-option/skip-analysis? boolean?)
+(s/def ::read-csv-args (s/merge
+                        ::guess-spec-args
+                        (s/keys :opt-un [:meta-csv.core.reader-option/skip-analysis?])))
+
+(s/fdef guess-spec
+  :args (s/cat :input ::csv-source
+               :options (s/? ::guess-spec-args))
+  :ret ::read-csv-args)
+
 (defn guess-spec
   "This function takes a source of csv lines (either a *Reader*, *InputStream* or *String* URI)
 and tries to guess the specs necessary to parse it. You can use the option map to specify some values
@@ -373,7 +424,7 @@ for the spec. Recognised options are:
 
  *Analysis options*
 
-  +  **:header?**: Whether the file as a header on the first line
+  +  **:header?**: Whether the file has a header on the first line
   +  **:sample-size**: number of lines on which heuristics are applied. Defaults to *100*
   +  **:guess-types?**: Whether to try to guess types for each field. Defaults to *true*
   +  **:skip**: Number of lines to skip before starting to parse. Defaults to 0
@@ -402,7 +453,6 @@ for the spec. Recognised options are:
             guess-types? delimiter
             sample-size bom skip]
      :or {guess-types? true
-          nullable-fields? true
           sample-size 100
           skip 0}
      :as opts}]
@@ -490,6 +540,10 @@ for the spec. Recognised options are:
                             (cons (row->clj row csv-opts) (lazy-parse-csv parser)))))]
     (lazy-parse-csv (.parse csv-rdr rdr))))
 
+(s/fdef read-csv
+  :args (s/cat :input ::csv-source
+               :options (s/? ::read-csv-args)))
+
 (defn read-csv
   "This function takes a source of csv lines (either a *Reader*, *InputStream* or *String* URI)
   and returns the parsed results. If headers are found on the file or field names where given
@@ -500,7 +554,7 @@ for the spec. Recognised options are:
 
  *Analysis options*
 
- +  **header?**: Whether the file as a header on the first line
+ +  **header?**: Whether the file has a header on the first line
  +  **sample-size**: number of lines on which heuristics are applied. Defaults to *100*
  +  **guess-types?**: Whether to try to guess types for each field. Defaults to *true*
  +  **skip-analysis?**: Whether to completely bypass analysis and only use spec
@@ -537,7 +591,6 @@ for the spec. Recognised options are:
                    guess-types? greedy?
                    limit skip-analysis? bom]
             :or {guess-types? true
-                 strict? true
                  field-names-fn str/trim}
             :as full-spec} (normalize-csv-options
                             (if skip-analysis?
