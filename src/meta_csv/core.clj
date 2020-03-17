@@ -146,7 +146,7 @@
 (sdef-enum :meta-csv.core.field/type (into #{} (keys csv-types)))
 (s/def :meta-csv.core.field/read-fn fn?)
 (s/def :meta-csv.core.field/write-fn fn?)
-
+(s/def :meta-csv.core.field/skip? boolean?)
 
 (def skip-fields #{:... :_})
 (sdef-enum :meta-csv.core.field/skip skip-fields)
@@ -155,7 +155,8 @@
                            :full-spec (s/keys :opt-un [:meta-csv.core.field/field
                                                        :meta-csv.core.field/type
                                                        :meta-csv.core.field/read-fn
-                                                       :meta-csv.core.field/write-fn])
+                                                       :meta-csv.core.field/write-fn
+                                                       :meta-csv.core.field/skip?])
                            :field-name :meta-csv.core.field/field
                            :skip-field :meta-csv.core.field/skip))
 (s/def ::fields-definition-list (s/coll-of ::field-definition :min-count 1))
@@ -256,7 +257,7 @@
                     (assoc! acc kname transformed)))))
        (with-meta
          (if named-fields?
-           (apply array-map acc)
+           (apply array-map (persistent! acc))
            (persistent! acc))
          {::original-line-number (+ skip (.getOriginalLineNumber row))})))
     (catch Exception e
@@ -528,7 +529,7 @@ for the spec. Recognised options are:
                schema-with-override (if (map? override-fields)
                                       (override-schema full-schema override-fields)
                                       full-schema)]
-           {:fields schema-with-override :delimiter (or delimiter guessed-delimiter) :bom bom-name
+           {:fields (into [] schema-with-override) :delimiter (or delimiter guessed-delimiter) :bom bom-name
             :encoding enc :skip-analysis? true :header? (if (nil? header?) guessed-header header?)
             :quoted? guessed-quote})
          (finally
