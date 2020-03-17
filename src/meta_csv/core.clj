@@ -234,9 +234,9 @@
                 :or {skip 0}}]
   (try
     (loop [todo fields
-          row-idx 0
-          idx 0
-          acc (if named-fields? (transient {}) (transient []))]
+           row-idx 0
+           idx 0
+           acc (transient [])]
      (if-let [{:keys [field type skip? read-fn]} (first todo)]
        (if skip?
          (recur (rest todo) (inc row-idx) idx acc)
@@ -251,9 +251,13 @@
            (recur (rest todo)
                   (inc row-idx)
                   (inc idx)
-                  (assoc! acc kname transformed))))
+                  (if named-fields?
+                    (-> acc (conj! kname) (conj! transformed))
+                    (assoc! acc kname transformed)))))
        (with-meta
-         (persistent! acc)
+         (if named-fields?
+           (apply array-map acc)
+           (persistent! acc))
          {::original-line-number (+ skip (.getOriginalLineNumber row))})))
     (catch Exception e
       (throw (ex-info (format "Error reading row %d" (+ skip (.getOriginalLineNumber row)))
