@@ -8,6 +8,14 @@
            [com.ibm.icu.text CharsetDetector]
            [java.io Reader BufferedReader]))
 
+(def default-read-fn identity)
+(defn default-write-fn
+  [v]
+  (cond (keyword? v) (name v)
+        (symbol? v) (name v)
+        (string? v) v
+        :else (str v)))
+
 (defn ^:no-doc integer-string?
   [s]
   (boolean (re-matches #"-?\d+" (str/trim s))))
@@ -125,7 +133,7 @@
                                                             [istream
                                                              (fn [& args]
                                                                (.close istream)
-                                                               (doseq [arg args]
+                                                               (doseq [^java.lang.AutoCloseable arg args]
                                                                  (.close arg))
                                                                true)]))
              enc (or encoding (guess-charset raw-stream))
@@ -148,9 +156,6 @@
 (s/def :meta-csv.core.field/write-fn fn?)
 (s/def :meta-csv.core.field/skip? boolean?)
 
-(def skip-fields #{:... :_})
-(sdef-enum :meta-csv.core.field/skip skip-fields)
-
 (s/def ::field-definition (s/or
                            :full-spec (s/keys :opt-un [:meta-csv.core.field/field
                                                        :meta-csv.core.field/type
@@ -158,7 +163,7 @@
                                                        :meta-csv.core.field/write-fn
                                                        :meta-csv.core.field/skip?])
                            :field-name :meta-csv.core.field/field
-                           :skip-field :meta-csv.core.field/skip))
+                           :skip-field nil?))
 (s/def ::fields-definition-list (s/coll-of ::field-definition :min-count 1))
 
 (defn ^:no-doc is-header?
@@ -238,28 +243,29 @@
            row-idx 0
            idx 0
            acc (transient [])]
-     (if-let [{:keys [field type skip? read-fn]} (first todo)]
-       (if skip?
-         (recur (rest todo) (inc row-idx) idx acc)
-         (let [kname (if named-fields? (field-names-fn field) idx)
-               ^String v (.getField row idx)
-               filter-v (if (and null v (re-find null v)) nil v)
-               {:keys [coercer]} (type csv-types)
-               coerced (if (and filter-v (not (.isEmpty filter-v)))
-                         (coercer v)
-                         nil)
-               transformed (when coerced (read-fn coerced))]
-           (recur (rest todo)
-                  (inc row-idx)
-                  (inc idx)
-                  (if named-fields?
-                    (-> acc (conj! kname) (conj! transformed))
-                    (assoc! acc kname transformed)))))
-       (with-meta
-         (if named-fields?
-           (apply array-map (persistent! acc))
-           (persistent! acc))
-         {::original-line-number (+ skip (.getOriginalLineNumber row))})))
+      (if (seq todo)
+        (let [{:keys [field type skip? read-fn] :or {read-fn default-read-fn} :as spec} (first todo)]
+          (if (or skip? (nil? spec))
+            (recur (rest todo) (inc row-idx) idx acc)
+            (let [kname (if named-fields? (field-names-fn field) idx)
+                  ^String v (.getField row row-idx)
+                  filter-v #dbg (if (and null v (if (set? null) (null v) (= v null))) nil v)
+                  {:keys [coercer]} (type csv-types)
+                  coerced (if (and filter-v (not (.isEmpty filter-v)))
+                            (coercer v)
+                            nil)
+                  transformed (when coerced (read-fn coerced))]
+              (recur (rest todo)
+                     (inc row-idx)
+                     (inc idx)
+                     (if named-fields?
+                       (-> acc (conj! kname) (conj! transformed))
+                       (assoc! acc kname transformed))))))
+        (with-meta
+          (if named-fields?
+            (apply array-map (persistent! acc))
+            (persistent! acc))
+          {::original-line-number (+ skip (.getOriginalLineNumber row))})))
     (catch Exception e
       (throw (ex-info (format "Error reading row %d" (+ skip (.getOriginalLineNumber row)))
                       {:line-number (+ skip (.getOriginalLineNumber row))}
@@ -327,30 +333,15 @@
         (if-not (instance? Reader uri)
           (.close rdr))))))
 
-(def default-read-fn identity)
-(defn default-write-fn
-  [v]
-  (cond (keyword? v) (name v)
-        (symbol? v) (name v)
-        (string? v) v
-        :else (str v)))
-
-(defn ^:no-doc normalize-field
-  [{:keys [read-fn write-fn] :as schema}]
-  (-> schema
-      (cond-> (nil? read-fn) (assoc :read-fn default-read-fn))
-      (cond-> (nil? write-fn) (assoc :write-fn default-write-fn))))
-
 (defn ^:no-doc normalize-fields-schema
   [schema]
   (cond
     (sequential? schema) (mapv (fn [x] (cond
-                                         (= x :...) {}
                                          (keyword? x) {:field x}
-                                         :else (normalize-field x)))
+                                         (string? x) {:field x}
+                                         :else x))
                                schema)
     (map? schema) schema
-    (nil? schema) nil
     :else nil))
 
 (defn ^:no-doc normalize-csv-options
@@ -361,33 +352,16 @@
 
 (defn ^:no-doc defined-name?
   [v]
-  (cond (string? v)
-        (> (.length v) 0)
+  (cond (string? v) (> (.length ^String v) 0)
         (keyword? v) true
         :else false))
 
-(defn ^:no-doc override-schema
-  [base override]
-  (reduce
-   (fn [acc [k v]]
-     (let [idx (if (int? k)
-                 k
-                 (first (remove nil?
-                                (map-indexed (fn [idx {:keys [field]}]
-                                               (when (and field
-                                                          (or (= field k)
-                                                              (= field (keyword k))))
-                                                 idx))
-                                             base))))]
-       (if idx
-         (update acc idx merge v)
-         acc)))
-   (into [] base) override))
-
 (s/def :meta-csv.core.reader-option/header? boolean?)
 (s/def :meta-csv.core.reader-option/sample-size integer?)
-(s/def :meta-csv.core.reader-option/guess-types boolean?)
+(s/def :meta-csv.core.reader-option/guess-types? boolean?)
 (s/def :meta-csv.core.reader-option/skip integer?)
+(s/def :meta-csv.core.reader-option/null (s/or :string string?
+                                               :set set?))
 
 (s/def :meta-csv.core.reader-option/fields ::fields-definition-list)
 
@@ -400,13 +374,14 @@
 
 (s/def ::guess-spec-args (s/keys :opt-un [:meta-csv.core.reader-option/header?
                                           :meta-csv.core.reader-option/sample-size
-                                          :meta-csv.core.reader-option/guess-types
+                                          :meta-csv.core.reader-option/guess-types?
                                           :meta-csv.core.reader-option/skip
                                           :meta-csv.core.reader-option/fields
                                           :meta-csv.core.reader-option/encoding
                                           :meta-csv.core.reader-option/bom
                                           :meta-csv.core.reader-option/field-names-fn
-                                          :meta-csv.core.reader-option/delimiter]))
+                                          :meta-csv.core.reader-option/delimiter
+                                          :meta-csv.core.reader-option/null]))
 
 (s/def ::csv-source (s/or :java-reader #(instance? Reader %)
                           :java-input-stream #(instance? java.io.InputStream %)
@@ -462,10 +437,7 @@ for the spec. Recognised options are:
           skip 0}
      :as opts}]
    (let [norm-opts (normalize-csv-options opts)
-         fields-seq (when (sequential? (:fields norm-opts))
-                      (:fields norm-opts))
-         override-fields (when (map? (:fields norm-opts))
-                           (:fields norm-opts))
+         fields-seq (:fields norm-opts)
          [^BufferedReader rdr clean-rdr enc bom-name] (get-reader uri encoding bom)]
        (try
          (when (and skip (> skip 0)) (dotimes [_ skip] (.readLine rdr)))
@@ -506,10 +478,12 @@ for the spec. Recognised options are:
                                           given-field-label (:field given-field ::not-found)]]
                                 (cond
                                   (and given-field
-                                       (not (#{{} ::not-found} given-field))
-                                       (not (defined-name? (:field given-field)))) (:field given-field)
+                                       (not (or (map? given-field) (= ::not-found given-field))))
+                                  (:field given-field)
+
                                   (and (or (= trimmed-header ::null) (false? header?))
                                        (= given-field-label ::not-found)) (fname-fn (str "col" idx))
+
                                   trimmed-header (fname-fn trimmed-header)
                                   (= given-field ::not-found) nil))))))
                full-schema (for [idx (range (max ((fnil count []) (:fields norm-opts))
@@ -525,11 +499,8 @@ for the spec. Recognised options are:
                                      (cond-> (and guess-types? (not= guessed-type ::not-found))
                                        (merge guessed-type))
                                      (cond-> (not= given-field ::not-found) (merge given-field))
-                                     (update :type #(if (keyword? %) % :string))))))
-               schema-with-override (if (map? override-fields)
-                                      (override-schema full-schema override-fields)
-                                      full-schema)]
-           {:fields (into [] schema-with-override) :delimiter (or delimiter guessed-delimiter) :bom bom-name
+                                     (update :type #(if (keyword? %) % :string))))))]
+           {:fields (into [] full-schema) :delimiter (or delimiter guessed-delimiter) :bom bom-name
             :encoding enc :skip-analysis? true :header? (if (nil? header?) guessed-header header?)
             :quoted? guessed-quote})
          (finally
@@ -565,6 +536,7 @@ for the spec. Recognised options are:
  +  **skip-analysis?**: Whether to completely bypass analysis and only use spec
     Defaults to *false*
  +  **skip**: Number of lines to skip before starting to parse. Defaults to 0
+ +  **null**: String or set of strings to be coerced to nil
 
  *Schema options*
 
@@ -609,7 +581,7 @@ for the spec. Recognised options are:
        (try
          (let [given-field-names? (some boolean (map :field (:fields full-spec)))
                named-fields? (or header? given-field-names?)
-               csv-opts (merge full-spec {:named-fields? named-fields?})
+               csv-opts (merge opts full-spec {:named-fields? named-fields?})
                _ (when (and skip (> skip 0)) (dotimes [_ skip] (.readLine rdr)))
                csv-seq (parse-csv rdr clean-rdr csv-opts)]
            csv-seq)
@@ -618,35 +590,35 @@ for the spec. Recognised options are:
            (throw e)))))
   ([uri] (read-csv uri {})))
 
-(defn write-csv
-  [input data {:keys [encoding fields delimiter headers?]
-               :or {encoding "utf-8"
-                    delimiter \;}
-               :as opts}]
-  (let [norm-fields (normalize-fields-schema fields)
-        named-fields? (map? (first fields))
-        given-header-fields (when (every? :field norm-fields)
-                              (map :field norm-fields))
-        extracted-header-fields (when (map? fields)
-                                  (sort-by :field (map (fn [k v] (assoc v :field k)) fields)))
-        actual-headers (or given-header-fields extracted-header-fields)
-        [writer clean-writer] (if (instance? java.io.Writer input)
-                                [input (constantly true)]
-                                (let [wrt (io/writer input :encoding encoding)]
-                                  [wrt #(.close wrt)]))
+;; (defn write-csv
+;;   [input data {:keys [encoding fields delimiter headers?]
+;;                :or {encoding "utf-8"
+;;                     delimiter \;}
+;;                :as opts}]
+;;   (let [norm-fields (normalize-fields-schema fields)
+;;         named-fields? (map? (first fields))
+;;         given-header-fields (when (every? :field norm-fields)
+;;                               (map :field norm-fields))
+;;         extracted-header-fields (when (map? fields)
+;;                                   (sort-by :field (map (fn [k v] (assoc v :field k)) fields)))
+;;         actual-headers (or given-header-fields extracted-header-fields)
+;;         [writer clean-writer] (if (instance? java.io.Writer input)
+;;                                 [input (constantly true)]
+;;                                 (let [wrt (io/writer input :encoding encoding)]
+;;                                   [wrt #(.close wrt)]))
 
-        with-headers? (if (not (nil? headers?))
-                        headers?
-                        (boolean actual-headers))
-        process-row (if named-fields?
-                        (fn [r]
-                          (reduce (fn [acc {:keys [field key]}]
-                                    ())
-                                  (transient {}) )))
-        csv-writer (CsvWriter.)]
-    (.setFieldSeparator delimiter)
-    (let [appender (.append csv-writer writer)]
-      (when with-headers?
-        (.appendLine appender (map name actual-headers)))
-      (doseq [line data]
-        (.appendLine appender data)))))
+;;         with-headers? (if (not (nil? headers?))
+;;                         headers?
+;;                         (boolean actual-headers))
+;;         process-row (if named-fields?
+;;                         (fn [r]
+;;                           (reduce (fn [acc {:keys [field key]}]
+;;                                     ())
+;;                                   (transient {}) )))
+;;         csv-writer (CsvWriter.)]
+;;     (.setFieldSeparator csv-writer delimiter)
+;;     (let [appender (.append csv-writer writer)]
+;;       (when with-headers?
+;;         (.appendLine appender (map name actual-headers)))
+;;       (doseq [line data]
+;;         (.appendLine appender data)))))
