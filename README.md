@@ -28,11 +28,10 @@ The easiest way to use when hacking at the REPL is simply:
 
 ```clojure
 (require '[meta-csv.core :as csv])
-(def csv-file-path "dev-resources/samples/marine-economy-2007-18.csv")
 ```
 
 ```clojure
-(first (csv/read-csv csv-file-path))
+(first (csv/read-csv "./dev-resources/samples/marine-economy-2007-18.csv"))
 
 => {:year 2007,
     :category "Fisheries and aquaculture",
@@ -99,7 +98,7 @@ This spec can actually be created by another noteworthy function, `guess-spec`.
 ```
 
 Then the `:fields` vector describing the processing on each field can be
-customized to produce exactly the right format of data for going to production.
+customized to produce exactly the right format of data. This spec can be used directly as the second argument to `read-csv`.
 
 More documentation forthcoming, for now you can use the quite exhaustive
 docstrings in the [API
