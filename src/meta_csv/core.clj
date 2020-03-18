@@ -249,7 +249,7 @@
             (recur (rest todo) (inc row-idx) idx acc)
             (let [kname (if named-fields? (field-names-fn field) idx)
                   ^String v (.getField row row-idx)
-                  filter-v #dbg (if (and null v (if (set? null) (null v) (= v null))) nil v)
+                  filter-v (if (and null v (if (set? null) (null v) (= v null))) nil v)
                   {:keys [coercer]} (type csv-types)
                   coerced (if (and filter-v (not (.isEmpty filter-v)))
                             (coercer v)
