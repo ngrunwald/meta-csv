@@ -98,13 +98,45 @@ This spec can actually be created by another noteworthy function, `guess-spec`.
 ```
 
 Then the `:fields` vector describing the processing on each field can be
-customized to produce exactly the right format of data. This spec can be used directly as the second argument to `read-csv`.
+customized to produce exactly the right format of data. This spec can be used
+directly as the second argument to `read-csv`.
 
-More documentation forthcoming, for now you can use the quite exhaustive
-docstrings in the [API
+The useful functions are extensively documented in the docstrings of the [API
 Documentation](https://cljdoc.org/d/meta-csv/meta-csv/CURRENT/doc/readme).
 
 [![cljdoc badge](https://cljdoc.org/badge/meta-csv/meta-csv)](https://cljdoc.org/d/meta-csv/meta-csv/CURRENT)
+
+The test file also contains interesting examples.
+
+## Tips and tricks
+
+Need to get out put as an array like clojure.data.csv but with type coercions?
+The `:skip` param skips the first line and the false `:header?` returns arrays.
+
+```clojure
+(first (csv/read-csv "./dev-resources/samples/marine-economy-2007-18.csv" {:skip 1 :header? false}))
+
+=> [2007
+    "Fisheries and aquaculture"
+    "Cont. to ME Wage and salary earners"
+    "Proportion"
+    "Actual"
+    "LEED"
+    43.1
+    "R"]
+```
+
+One of the differences with [ultra-csv](https://github.com/ngrunwald/ultra-csv)
+is that meta-csv makes no attempt at validating output data. Validation is an
+important concern but should not be handled by the file format parser, even a
+smart one. I recommend however in production using something like
+[spec-provider](https://github.com/stathissideris/spec-provider) to generate
+specs and validating the data with them when they come from a manual source.
+
+In the same spirit, I tend to use `read-csv` at the REPL when doing analysis
+work, but when and if going to production, I generate a spec with `guess-spec`
+and uses that with `read-csv`, to make the process more reliable if the input
+file format presents problems at a future time.
 
 ## License
 
