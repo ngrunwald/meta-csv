@@ -8,7 +8,8 @@
            [com.ibm.icu.text CharsetDetector]
            [java.io Reader BufferedReader]))
 
-(def default-read-fn identity)
+(def default-preprocess-fn str/trim)
+(def default-postprocess-fn identity)
 (defn default-write-fn
   [v]
   (cond (keyword? v) (name v)
@@ -18,44 +19,42 @@
 
 (defn ^:no-doc integer-string?
   [s]
-  (boolean (re-matches #"-?\d+" (str/trim s))))
+  (boolean (re-matches #"-?\d+" s)))
 
 (defn ^:no-doc float-string?
   [s]
-  (boolean (re-matches #"-?\d[\d\p{Zs}']*([\.,][\d\p{Zs}']*\d)?" (str/trim s))))
+  (boolean (re-matches #"-?\d[\d\p{Zs}']*([\.,][\d\p{Zs}']*\d)?" s)))
 
 (defn ^:no-doc percent-string?
   [s]
-  (boolean (re-matches #"-?\d+([\.,]\d+)?\s*%\s*$" (str/trim s))))
+  (boolean (re-matches #"-?\d+([\.,]\d+)?\s*%\s*$" s)))
 
 (def base-types
   {:long    {:predicate integer-string?
-             :coercer #(let [clean (str/trim %)]
-                         (when (> (count clean) 0)
-                           (Long/parseLong clean)))
+             :coercer #(when (> (count %) 0)
+                         (Long/parseLong %))
              :priority 0}
    :double  {:predicate float-string?
              :coercer #(-> %
-                           (str/trim)
                            (str/replace #"[\p{Sc}\s]+" "")
                            (cond-> (not (re-find #"\." %)) (str/replace #"," "."))
                            (cond-> (re-find #"\." %) (str/replace #"\,+" ""))
                            (Double/parseDouble))
              :priority 1}
    :percent {:predicate percent-string?
-             :coercer (fn [s] (let [[num-str] (re-find #"-?\d[\d\p{Zs}']*([\.,][\d\p{Zs}']*\d)?" (str/trim s))
+             :coercer (fn [s] (let [[num-str] (re-find #"-?\d[\d\p{Zs}']*([\.,][\d\p{Zs}']*\d)?" s)
                                     num (Double/parseDouble num-str)]
                                 (/ num 100.0)))
              :priority 2}
    :string  {:predicate string?
-             :coercer str/trim
+             :coercer identity
              :priority 3}})
 
 (def ^:no-doc other-types
   {:float   {:predicate float-string?
-             :coercer #(Float/parseFloat (str/trim %))}
+             :coercer #(Float/parseFloat %)}
    :integer {:predicate integer-string?
-             :coercer #(Integer/parseInt (str/trim %))}})
+             :coercer #(Integer/parseInt %)}})
 
 (def ^:no-doc synonym-types
   {:int (:integer other-types)
@@ -152,14 +151,16 @@
 
 (s/def :meta-csv.core.field/field (s/or :string string? :keyword keyword?))
 (sdef-enum :meta-csv.core.field/type (into #{} (keys csv-types)))
-(s/def :meta-csv.core.field/read-fn fn?)
+(s/def :meta-csv.core.field/preprocess-fn fn?)
+(s/def :meta-csv.core.field/postprocess-fn fn?)
 (s/def :meta-csv.core.field/write-fn fn?)
 (s/def :meta-csv.core.field/skip? boolean?)
 
 (s/def ::field-definition (s/or
                            :full-spec (s/keys :opt-un [:meta-csv.core.field/field
                                                        :meta-csv.core.field/type
-                                                       :meta-csv.core.field/read-fn
+                                                       :meta-csv.core.field/preprocess-fn
+                                                       :meta-csv.core.field/postprocess-fn
                                                        :meta-csv.core.field/write-fn
                                                        :meta-csv.core.field/skip?])
                            :field-name :meta-csv.core.field/field
@@ -244,17 +245,23 @@
            idx 0
            acc (transient [])]
       (if (seq todo)
-        (let [{:keys [field type skip? read-fn] :or {read-fn default-read-fn} :as spec} (first todo)]
+        (let [{:keys [field type skip? postprocess-fn preprocess-fn]
+               :or {postprocess-fn default-postprocess-fn
+                    preprocess-fn default-preprocess-fn} :as spec} (first todo)]
           (if (or skip? (nil? spec))
             (recur (rest todo) (inc row-idx) idx acc)
             (let [kname (if named-fields? (field-names-fn field) idx)
                   ^String v (.getField row row-idx)
-                  filter-v (if (and null v (if (set? null) (null v) (= v null))) nil v)
+                  preproc-v (preprocess-fn v)
+                  filter-v (if (and null preproc-v
+                                    (if (set? null) (null preproc-v) (= preproc-v null)))
+                             nil
+                             preproc-v)
                   {:keys [coercer]} (type csv-types)
                   coerced (if (and filter-v (not (.isEmpty filter-v)))
-                            (coercer v)
+                            (coercer preproc-v)
                             nil)
-                  transformed (when coerced (read-fn coerced))]
+                  transformed (when coerced (postprocess-fn coerced))]
               (recur (rest todo)
                      (inc row-idx)
                      (inc idx)
@@ -411,10 +418,20 @@ for the spec. Recognised options are:
 
  *Schema options*
 
-  In  a **:fields** key, the seq of fields specs in the format:
+  In  a **:fields** key, the seq of fields specs you want to override in the inference process.
+  Mostly used to specify manually name of column or type for special needs. The same effect cab be had by editing the resulting spec.
+  Fields specs are maps with the following keys:
 
+  + **:field**: The name of the column in the results
+  + **:type**: the type to use for coercing the value. Can be one of (:float :percent :double :long :integer :string)
+
+  A *nil* field spec means to skip this column in the results.
+  An empty map means full inference for this field.
+  A *Keyword* or *String* instead of a map simply defines the name of the column in the results.
+
+  Example:
   ```clojure
-  {:type :string :field :my-field-name}
+  {:fields [{:type :string :field :my-field-name} nil {} {:type :float :field :my-float-field}]}
   ```
 
  *File options*
@@ -540,16 +557,26 @@ for the spec. Recognised options are:
 
  *Schema options*
 
-  In  a **:fields** key, the seq of fields specs in the format:
+  In  a **:fields** key, the seq of fields specs you want to override in the inference process.
+  Mostly used to specify manually name of column or type for special needs.
+  Fields specs are maps with the following keys:
 
+  + **:field**: The name of the column in the results
+  + **:type**: the type to use for coercing the value. Can be one of :float :percent :double :long :integer :string
+  + **:preprocess-fn**: function applied to value as strings, before type coercion. Defaults to (fn [^String v] str/trim)
+  + **:postprocess-fn**: function applied to values after type coercion. Defaults to *identity*
+
+  A *nil* field spec means to skip this column in the results.
+  An empty map means full inference for this field.
+  A *Keyword* or *String* instead of a map simply defines the name of the column in the results.
+
+  Example:
   ```clojure
-  {:type :string :field :my-field-name}
+  {:fields [{:type :string :field :my-field-name} nil {} {:type :float :field :my-float-field}]}
   ```
 
  *Processing options*
 
- +  **limit**: Closes and cleans the io ressources after reading this many lines. Useful for
-    sampling
  +  **field-names-fn**: fn to apply to the name of each field. Can be used to sanitize header
     names. Defaults to trim function
 
@@ -559,7 +586,7 @@ for the spec. Recognised options are:
   ([uri
     {:keys [header? field-names-fn fields encoding
             guess-types?
-            limit skip-analysis?
+            skip-analysis?
             bom skip null]
      :or {guess-types? true
           skip 0}

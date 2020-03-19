@@ -140,11 +140,12 @@
                   {:fields [{:type :float} nil {:skip? true} nil nil :src {} nil]}) =in=>
         [{:year 2007.0, :src "LEED", :data_value 43.1} ...])
 
-  (fact "using read-fn"
+  (fact "using process-fn"
         (read-csv "./dev-resources/samples/marine-economy-2007-18.csv"
-                  {:fields [{} nil nil nil nil nil {:field :target :read-fn inc} nil]}) =in=>
-        [{:year 2007 :target 44.1} ...]
-        )
+                  {:fields [{} nil nil nil nil nil {:field :target :preprocess-fn #(str "1" %)
+                                                    :postprocess-fn inc} nil]})
+        =in=>
+        [{:year 2007 :target 144.1} ...])
 
   (fact "with field-names-fn"
         (read-csv "./dev-resources/samples/marine-economy-2007-18.csv"
