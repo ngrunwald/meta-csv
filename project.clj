@@ -1,4 +1,4 @@
-(defproject meta-csv "0.1.0-SNAPSHOT"
+(defproject meta-csv "0.1.0"
   :description "A smart reader for CSV files"
   :url "https://github.com/ngrunwald/meta-csv"
   :license {:name "EPL-2.0 OR GPL-2.0-or-later WITH Classpath-exception-2.0"
