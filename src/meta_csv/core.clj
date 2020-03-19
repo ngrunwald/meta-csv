@@ -8,9 +8,9 @@
            [com.ibm.icu.text CharsetDetector]
            [java.io Reader BufferedReader]))
 
-(def default-preprocess-fn str/trim)
-(def default-postprocess-fn identity)
-(defn default-write-fn
+(def ^:no-doc default-preprocess-fn str/trim)
+(def ^:no-doc default-postprocess-fn identity)
+(defn ^:no-doc default-write-fn
   [v]
   (cond (keyword? v) (name v)
         (symbol? v) (name v)
@@ -29,7 +29,7 @@
   [s]
   (boolean (re-matches #"-?\d+([\.,]\d+)?\s*%\s*$" s)))
 
-(def base-types
+(def ^:no-doc base-types
   {:long    {:predicate integer-string?
              :coercer #(when (> (count %) 0)
                          (Long/parseLong %))
@@ -236,7 +236,7 @@
     (when error-on-different-field-count? (.setErrorOnDifferentFieldCount reader true))
     reader))
 
-(defn row->clj
+(defn ^:no-doc row->clj
   [^CsvRow row {:keys [fields field-names-fn named-fields? skip null]
                 :or {skip 0}}]
   (try
