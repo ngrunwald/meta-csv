@@ -1,8 +1,7 @@
 (ns meta-csv.core
   (:require [clojure.java.io :as io]
             [clojure.string :as str]
-            #?@(:bb [[clojure.data.csv :as csv]
-                     [spartan.spec :as s]]
+            #?@(:bb [[clojure.data.csv :as csv]]
                 :clj [[clojure.spec.alpha :as s]]))
   (:import [java.io Reader BufferedReader]
            #?@(:bb []
@@ -153,27 +152,30 @@
   ([src encoding] (get-reader src encoding nil))
   ([src] (get-reader src nil nil)))
 
-(defmacro ^:private ^:no-doc sdef-enum
-  [nam enum]
-  `(s/def ~nam ~(eval enum)))
+#?(:bb nil
+   :clj
+   (do
+     (defmacro ^:private ^:no-doc sdef-enum
+       [nam enum]
+       `(s/def ~nam ~(eval enum)))
 
-(s/def :meta-csv.core.field/field (s/or :string string? :keyword keyword?))
-(sdef-enum :meta-csv.core.field/type (into #{} (keys csv-types)))
-(s/def :meta-csv.core.field/preprocess-fn fn?)
-(s/def :meta-csv.core.field/postprocess-fn fn?)
-(s/def :meta-csv.core.field/write-fn fn?)
-(s/def :meta-csv.core.field/skip? boolean?)
+     (s/def :meta-csv.core.field/field (s/or :string string? :keyword keyword?))
+     (sdef-enum :meta-csv.core.field/type (into #{} (keys csv-types)))
+     (s/def :meta-csv.core.field/preprocess-fn fn?)
+     (s/def :meta-csv.core.field/postprocess-fn fn?)
+     (s/def :meta-csv.core.field/write-fn fn?)
+     (s/def :meta-csv.core.field/skip? boolean?)
 
-(s/def ::field-definition (s/or
-                           :full-spec (s/keys :opt-un [:meta-csv.core.field/field
-                                                       :meta-csv.core.field/type
-                                                       :meta-csv.core.field/preprocess-fn
-                                                       :meta-csv.core.field/postprocess-fn
-                                                       :meta-csv.core.field/write-fn
-                                                       :meta-csv.core.field/skip?])
-                           :field-name :meta-csv.core.field/field
-                           :skip-field nil?))
-(s/def ::fields-definition-list (s/coll-of ::field-definition :min-count 1))
+     (s/def ::field-definition (s/or
+                                :full-spec (s/keys :opt-un [:meta-csv.core.field/field
+                                                            :meta-csv.core.field/type
+                                                            :meta-csv.core.field/preprocess-fn
+                                                            :meta-csv.core.field/postprocess-fn
+                                                            :meta-csv.core.field/write-fn
+                                                            :meta-csv.core.field/skip?])
+                                :field-name :meta-csv.core.field/field
+                                :skip-field nil?))
+     (s/def ::fields-definition-list (s/coll-of ::field-definition :min-count 1))))
 
 (defn ^:no-doc is-header?
   [line schema]
@@ -383,48 +385,49 @@
         (keyword? v) true
         :else false))
 
-(s/def :meta-csv.core.reader-option/header? boolean?)
-(s/def :meta-csv.core.reader-option/sample-size integer?)
-(s/def :meta-csv.core.reader-option/guess-types? boolean?)
-(s/def :meta-csv.core.reader-option/skip integer?)
-(s/def :meta-csv.core.reader-option/null (s/or :string string?
-                                               :set set?))
-
-(s/def :meta-csv.core.reader-option/fields ::fields-definition-list)
-
-(sdef-enum :meta-csv.core.reader-option/encoding (into #{} (map str/lower-case available-charsets)))
-(sdef-enum :meta-csv.core.reader-option/bom bom-names)
-
-(s/def :meta-csv.core.reader-option/field-names-fn fn?)
-
-(s/def :meta-csv.core.reader-option/delimiter #?(:bb any?
-                                                 :clj #(instance? Character %)))
-
-(s/def ::guess-spec-args (s/keys :opt-un [:meta-csv.core.reader-option/header?
-                                          :meta-csv.core.reader-option/sample-size
-                                          :meta-csv.core.reader-option/guess-types?
-                                          :meta-csv.core.reader-option/skip
-                                          :meta-csv.core.reader-option/fields
-                                          :meta-csv.core.reader-option/encoding
-                                          :meta-csv.core.reader-option/bom
-                                          :meta-csv.core.reader-option/field-names-fn
-                                          :meta-csv.core.reader-option/delimiter
-                                          :meta-csv.core.reader-option/null]))
-
-(s/def ::csv-source (s/or :java-reader #(instance? Reader %)
-                          :java-input-stream #(instance? java.io.InputStream %)
-                          :uri string?))
-
-(s/def :meta-csv.core.reader-option/skip-analysis? boolean?)
-(s/def ::read-csv-args (s/merge
-                        ::guess-spec-args
-                        (s/keys :opt-un [:meta-csv.core.reader-option/skip-analysis?])))
-
 #?(:bb nil
-   :clj (s/fdef guess-spec
-          :args (s/cat :input ::csv-source
-                       :options (s/? ::guess-spec-args))
-          :ret ::read-csv-args))
+   :clj
+   (do
+     (s/def :meta-csv.core.reader-option/header? boolean?)
+     (s/def :meta-csv.core.reader-option/sample-size integer?)
+     (s/def :meta-csv.core.reader-option/guess-types? boolean?)
+     (s/def :meta-csv.core.reader-option/skip integer?)
+     (s/def :meta-csv.core.reader-option/null (s/or :string string?
+                                                    :set set?))
+
+     (s/def :meta-csv.core.reader-option/fields ::fields-definition-list)
+
+     (sdef-enum :meta-csv.core.reader-option/encoding (into #{} (map str/lower-case available-charsets)))
+     (sdef-enum :meta-csv.core.reader-option/bom bom-names)
+
+     (s/def :meta-csv.core.reader-option/field-names-fn fn?)
+
+     (s/def :meta-csv.core.reader-option/delimiter #(instance? Character %))
+
+     (s/def ::guess-spec-args (s/keys :opt-un [:meta-csv.core.reader-option/header?
+                                               :meta-csv.core.reader-option/sample-size
+                                               :meta-csv.core.reader-option/guess-types?
+                                               :meta-csv.core.reader-option/skip
+                                               :meta-csv.core.reader-option/fields
+                                               :meta-csv.core.reader-option/encoding
+                                               :meta-csv.core.reader-option/bom
+                                               :meta-csv.core.reader-option/field-names-fn
+                                               :meta-csv.core.reader-option/delimiter
+                                               :meta-csv.core.reader-option/null]))
+
+     (s/def ::csv-source (s/or :java-reader #(instance? Reader %)
+                               :java-input-stream #(instance? java.io.InputStream %)
+                               :uri string?))
+
+     (s/def :meta-csv.core.reader-option/skip-analysis? boolean?)
+     (s/def ::read-csv-args (s/merge
+                             ::guess-spec-args
+                             (s/keys :opt-un [:meta-csv.core.reader-option/skip-analysis?])))
+
+     (s/fdef guess-spec
+       :args (s/cat :input ::csv-source
+                    :options (s/? ::guess-spec-args))
+       :ret ::read-csv-args)))
 
 (defn guess-spec
   "This function takes a source of csv lines (either a *Reader*, *InputStream* or *String* URI)
