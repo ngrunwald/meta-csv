@@ -1,6 +1,8 @@
 {:paths ["resources" "src"]
  :deps {org.clojure/clojure {:mvn/version "1.10.1"}
         de.siegmar/fastcsv {:mvn/version "1.0.3"}
-        com.ibm.icu/icu4j {:mvn/version "66.1"}}
- :aliases {:readme {:extra-deps {seancorfield/readme {:mvn/version "1.0.13"}}
+        com.ibm.icu/icu4j {:mvn/version "66.1"}
+        borkdude/spartan.spec {:git/url "https://github.com/borkdude/spartan.spec"
+                               :sha "ff7317d67ec15f188afb856d37090e5c9509374e"}}
+  :aliases {:readme {:extra-deps {seancorfield/readme {:mvn/version "1.0.13"}}
                     :main-opts ["-m" "seancorfield.readme"]}}}
