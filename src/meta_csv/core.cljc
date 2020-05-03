@@ -1,12 +1,14 @@
 (ns meta-csv.core
   (:require [clojure.java.io :as io]
             [clojure.string :as str]
-            [clojure.spec.alpha :as s])
-  (:import [de.siegmar.fastcsv.reader CsvReader CsvRow CsvParser]
-           [de.siegmar.fastcsv.writer CsvWriter]
-           [java.nio.charset Charset]
-           [com.ibm.icu.text CharsetDetector]
-           [java.io Reader BufferedReader]))
+            #?@(:bb [[clojure.data.csv :as csv]]
+                :clj [[clojure.spec.alpha :as s]]))
+  (:import [java.io Reader BufferedReader]
+           #?@(:bb []
+               :clj [[de.siegmar.fastcsv.reader CsvReader CsvRow CsvParser]
+                     [de.siegmar.fastcsv.writer CsvWriter]
+                     [com.ibm.icu.text CharsetDetector]
+                     [java.nio.charset Charset]])))
 
 (def ^:no-doc default-preprocess-fn str/trim)
 (def ^:no-doc default-postprocess-fn identity)
@@ -52,7 +54,8 @@
 
 (def ^:no-doc other-types
   {:float   {:predicate float-string?
-             :coercer #(Float/parseFloat %)}
+             :coercer #?(:bb #(Double/parseDouble %)
+                         :clj #(Float/parseFloat %))}
    :integer {:predicate integer-string?
              :coercer #(Integer/parseInt %)}})
 
@@ -63,21 +66,24 @@
 (def ^:no-doc guessable-csv-types base-types)
 (def ^:no-doc csv-types (merge base-types other-types synonym-types))
 
-(def ^:no-doc available-charsets (into #{} (.keySet (Charset/availableCharsets))))
+(def ^:no-doc available-charsets #?(:bb #{"UTF-8"}
+                                    :clj (into #{} (.keySet (Charset/availableCharsets)))))
 
 (defn ^:no-doc guess-charset
   [^java.io.InputStream is]
-  (try
-    (let [^CharsetDetector detector (CharsetDetector.)]
-      (.enableInputFilter detector true)
-      (.setText detector is)
-      (let [m (.detect detector)
-            encoding (.getName m)]
-        (if (available-charsets encoding)
-          encoding
-          "utf-8")))
-    (catch Exception _
-      "utf-8")))
+  #?(:bb "UTF-8" ;; use file -bi later if present to try a guess
+     :clj
+     (try
+       (let [^CharsetDetector detector (CharsetDetector.)]
+         (.enableInputFilter detector true)
+         (.setText detector is)
+         (let [m (.detect detector)
+               encoding (.getName m)]
+           (if (available-charsets encoding)
+             encoding
+             "UTF-8")))
+       (catch Exception _
+         "UTF-8"))))
 
 (def ^:no-doc boms
   {[(byte -1) (byte -2)] [:utf16-le 2]
@@ -124,17 +130,18 @@
 
 (defn ^:no-doc get-reader
   ([src encoding bom]
-     (if (instance? java.io.Reader src)
+     (if (instance? Reader src)
        [src (fn [& _] nil) encoding nil]
        (let [[^java.io.InputStream raw-stream close-fn] (if (instance? java.io.InputStream src)
                                                           [src (fn [& _] nil)]
                                                           (let [istream (io/input-stream src)]
                                                             [istream
-                                                             (fn [& args]
-                                                               (.close istream)
-                                                               (doseq [^java.lang.AutoCloseable arg args]
-                                                                 (.close arg))
-                                                               true)]))
+                                                             #?(:bb (fn [& _] nil)
+                                                                :clj (fn [& args]
+                                                                       (.close istream)
+                                                                       (doseq [^java.lang.AutoCloseable arg args]
+                                                                         (.close arg))
+                                                                       true))]))
              enc (or encoding (guess-charset raw-stream))
              [^java.io.InputStream istream bom-name] (if (nil? bom)
                                                (skip-bom-from-stream-if-present raw-stream)
@@ -145,27 +152,30 @@
   ([src encoding] (get-reader src encoding nil))
   ([src] (get-reader src nil nil)))
 
-(defmacro ^:private ^:no-doc sdef-enum
-  [nam enum]
-  `(s/def ~nam ~(eval enum)))
+#?(:bb nil
+   :clj
+   (do
+     (defmacro ^:private ^:no-doc sdef-enum
+       [nam enum]
+       `(s/def ~nam ~(eval enum)))
 
-(s/def :meta-csv.core.field/field (s/or :string string? :keyword keyword?))
-(sdef-enum :meta-csv.core.field/type (into #{} (keys csv-types)))
-(s/def :meta-csv.core.field/preprocess-fn fn?)
-(s/def :meta-csv.core.field/postprocess-fn fn?)
-(s/def :meta-csv.core.field/write-fn fn?)
-(s/def :meta-csv.core.field/skip? boolean?)
+     (s/def :meta-csv.core.field/field (s/or :string string? :keyword keyword?))
+     (sdef-enum :meta-csv.core.field/type (into #{} (keys csv-types)))
+     (s/def :meta-csv.core.field/preprocess-fn fn?)
+     (s/def :meta-csv.core.field/postprocess-fn fn?)
+     (s/def :meta-csv.core.field/write-fn fn?)
+     (s/def :meta-csv.core.field/skip? boolean?)
 
-(s/def ::field-definition (s/or
-                           :full-spec (s/keys :opt-un [:meta-csv.core.field/field
-                                                       :meta-csv.core.field/type
-                                                       :meta-csv.core.field/preprocess-fn
-                                                       :meta-csv.core.field/postprocess-fn
-                                                       :meta-csv.core.field/write-fn
-                                                       :meta-csv.core.field/skip?])
-                           :field-name :meta-csv.core.field/field
-                           :skip-field nil?))
-(s/def ::fields-definition-list (s/coll-of ::field-definition :min-count 1))
+     (s/def ::field-definition (s/or
+                                :full-spec (s/keys :opt-un [:meta-csv.core.field/field
+                                                            :meta-csv.core.field/type
+                                                            :meta-csv.core.field/preprocess-fn
+                                                            :meta-csv.core.field/postprocess-fn
+                                                            :meta-csv.core.field/write-fn
+                                                            :meta-csv.core.field/skip?])
+                                :field-name :meta-csv.core.field/field
+                                :skip-field nil?))
+     (s/def ::fields-definition-list (s/coll-of ::field-definition :min-count 1))))
 
 (defn ^:no-doc is-header?
   [line schema]
@@ -225,20 +235,25 @@
     (when (or (<= fv sv) (nil? sv))
       fc)))
 
-(defn ^:no-doc make-csv-reader
-  ^CsvReader [{:keys [delimiter skip-empty-rows? header?
-                      text-delimiter error-on-different-field-count?]}]
-  (let [^CsvReader reader (CsvReader.)]
-    (when delimiter (.setFieldSeparator reader delimiter))
-    (when skip-empty-rows? (.setSkipEmptyRows reader true))
-    (when header? (.setContainsHeader reader true))
-    (when text-delimiter (.setTextDelimiter reader text-delimiter))
-    (when error-on-different-field-count? (.setErrorOnDifferentFieldCount reader true))
-    reader))
+#?(:bb
+   nil
+   :clj
+   (defn ^:no-doc make-csv-reader
+     ^CsvReader [{:keys [delimiter skip-empty-rows? header?
+                         text-delimiter error-on-different-field-count?]}]
+     (let [^CsvReader reader (CsvReader.)]
+       (when delimiter (.setFieldSeparator reader delimiter))
+       (when skip-empty-rows? (.setSkipEmptyRows reader true))
+       (when header? (.setContainsHeader reader true))
+       (when text-delimiter (.setTextDelimiter reader text-delimiter))
+       (when error-on-different-field-count? (.setErrorOnDifferentFieldCount reader true))
+       reader)))
 
 (defn ^:no-doc row->clj
-  [^CsvRow row {:keys [fields field-names-fn named-fields? skip null]
-                :or {skip 0}}]
+  [#?@(:bb  [row]
+       :clj [^CsvRow row])
+   {:keys [fields field-names-fn named-fields? skip null]
+    :or {skip 0}}]
   (try
     (loop [todo fields
            row-idx 0
@@ -251,7 +266,8 @@
           (if (or skip? (nil? spec))
             (recur (rest todo) (inc row-idx) idx acc)
             (let [kname (if named-fields? (field-names-fn field) idx)
-                  ^String v (.getField row row-idx)
+                  ^String v #?(:bb (row row-idx)
+                               :clj (.getField row row-idx))
                   preproc-v (preprocess-fn v)
                   filter-v (if (and null preproc-v
                                     (if (set? null) (null preproc-v) (= preproc-v null)))
@@ -272,19 +288,25 @@
           (if named-fields?
             (apply array-map (persistent! acc))
             (persistent! acc))
-          {::original-line-number (+ skip (.getOriginalLineNumber row))})))
+          #?(:bb {}
+             :clj {::original-line-number (+ skip (.getOriginalLineNumber row))}))))
     (catch Exception e
-      (throw (ex-info (format "Error reading row %d" (+ skip (.getOriginalLineNumber row)))
-                      {:line-number (+ skip (.getOriginalLineNumber row))}
-                      e)))))
+      (let [line-number #?(:bb nil
+                           :clj (+ skip (.getOriginalLineNumber row)))]
+        (throw (ex-info (format "Error reading row %d" line-number)
+                        {:line-number line-number}
+                       e))))))
 
 (defn ^:no-doc parse-fields
   [lines delimiter]
   (let [txt (str/join "\n" lines)]
     (with-open [rdr (java.io.StringReader. txt)]
-      (let [csv-rdr (make-csv-reader {:delimiter delimiter})
-            seg-lines (map (fn [^CsvRow row] (into [] (.getFields row))) (.getRows (.read csv-rdr rdr)))]
-        seg-lines))))
+      #?(:bb
+         (doall (csv/read-csv rdr :delimiter delimiter))
+         :clj
+         (let [csv-rdr (make-csv-reader {:delimiter delimiter})
+               seg-lines (map (fn [^CsvRow row] (into [] (.getFields row))) (.getRows (.read csv-rdr rdr)))]
+           seg-lines)))))
 
 (defn ^:no-doc take-higher-priority
   [cands]
@@ -316,9 +338,9 @@
   (when (instance? Reader uri)
     (let [^Reader rdr uri]
       (if (.markSupported rdr)
-       (.mark rdr 1000000)
-       (throw (Exception. "Cannot analyze csv from unmarkable reader")))))
-  (let [^java.io.BufferedReader rdr (io/reader uri)]
+        (.mark rdr 1000000)
+        (throw (Exception. "Cannot analyze csv from unmarkable reader")))))
+  (let [^BufferedReader rdr (io/reader uri)]
     (try
       (let [lines (loop [ls []]
                     (if-let [line (.readLine rdr)]
@@ -331,7 +353,7 @@
             fields-schema (guess-types (rest seg-lines))
             has-header? (is-header? (first seg-lines) fields-schema)
             quoted? (is-quoted? lines delimiter)]
-        (when (instance? Reader uri)
+        (when (instance? java.io.Reader uri)
           (let [^Reader typed-rdr uri]
             (.reset typed-rdr)))
         {:delimiter delimiter :fields fields-schema :header? has-header? :quoted? quoted?
@@ -363,60 +385,63 @@
         (keyword? v) true
         :else false))
 
-(s/def :meta-csv.core.reader-option/header? boolean?)
-(s/def :meta-csv.core.reader-option/sample-size integer?)
-(s/def :meta-csv.core.reader-option/guess-types? boolean?)
-(s/def :meta-csv.core.reader-option/skip integer?)
-(s/def :meta-csv.core.reader-option/null (s/or :string string?
-                                               :set set?))
+#?(:bb nil
+   :clj
+   (do
+     (s/def :meta-csv.core.reader-option/header? boolean?)
+     (s/def :meta-csv.core.reader-option/sample-size integer?)
+     (s/def :meta-csv.core.reader-option/guess-types? boolean?)
+     (s/def :meta-csv.core.reader-option/skip integer?)
+     (s/def :meta-csv.core.reader-option/null (s/or :string string?
+                                                    :set set?))
 
-(s/def :meta-csv.core.reader-option/fields ::fields-definition-list)
+     (s/def :meta-csv.core.reader-option/fields ::fields-definition-list)
 
-(sdef-enum :meta-csv.core.reader-option/encoding (into #{} (map str/lower-case available-charsets)))
-(sdef-enum :meta-csv.core.reader-option/bom bom-names)
+     (sdef-enum :meta-csv.core.reader-option/encoding (into #{} (map str/lower-case available-charsets)))
+     (sdef-enum :meta-csv.core.reader-option/bom bom-names)
 
-(s/def :meta-csv.core.reader-option/field-names-fn fn?)
+     (s/def :meta-csv.core.reader-option/field-names-fn fn?)
 
-(s/def :meta-csv.core.reader-option/delimiter #(instance? Character %))
+     (s/def :meta-csv.core.reader-option/delimiter #(instance? Character %))
 
-(s/def ::guess-spec-args (s/keys :opt-un [:meta-csv.core.reader-option/header?
-                                          :meta-csv.core.reader-option/sample-size
-                                          :meta-csv.core.reader-option/guess-types?
-                                          :meta-csv.core.reader-option/skip
-                                          :meta-csv.core.reader-option/fields
-                                          :meta-csv.core.reader-option/encoding
-                                          :meta-csv.core.reader-option/bom
-                                          :meta-csv.core.reader-option/field-names-fn
-                                          :meta-csv.core.reader-option/delimiter
-                                          :meta-csv.core.reader-option/null]))
+     (s/def ::guess-spec-args (s/keys :opt-un [:meta-csv.core.reader-option/header?
+                                               :meta-csv.core.reader-option/sample-size
+                                               :meta-csv.core.reader-option/guess-types?
+                                               :meta-csv.core.reader-option/skip
+                                               :meta-csv.core.reader-option/fields
+                                               :meta-csv.core.reader-option/encoding
+                                               :meta-csv.core.reader-option/bom
+                                               :meta-csv.core.reader-option/field-names-fn
+                                               :meta-csv.core.reader-option/delimiter
+                                               :meta-csv.core.reader-option/null]))
 
-(s/def ::csv-source (s/or :java-reader #(instance? Reader %)
-                          :java-input-stream #(instance? java.io.InputStream %)
-                          :uri string?))
+     (s/def ::csv-source (s/or :java-reader #(instance? Reader %)
+                               :java-input-stream #(instance? java.io.InputStream %)
+                               :uri string?))
 
-(s/def :meta-csv.core.reader-option/skip-analysis? boolean?)
-(s/def ::read-csv-args (s/merge
-                        ::guess-spec-args
-                        (s/keys :opt-un [:meta-csv.core.reader-option/skip-analysis?])))
+     (s/def :meta-csv.core.reader-option/skip-analysis? boolean?)
+     (s/def ::read-csv-args (s/merge
+                             ::guess-spec-args
+                             (s/keys :opt-un [:meta-csv.core.reader-option/skip-analysis?])))
 
-(s/fdef guess-spec
-  :args (s/cat :input ::csv-source
-               :options (s/? ::guess-spec-args))
-  :ret ::read-csv-args)
+     (s/fdef guess-spec
+       :args (s/cat :input ::csv-source
+                    :options (s/? ::guess-spec-args))
+       :ret ::read-csv-args)))
 
 (defn guess-spec
   "This function takes a source of csv lines (either a *Reader*, *InputStream* or *String* URI)
-and tries to guess the specs necessary to parse it. You can use the option map to specify some values
-for the spec. Recognised options are:
+  and tries to guess the specs necessary to parse it. You can use the option map to specify some values
+  for the spec. Recognised options are:
 
- *Analysis options*
+  *Analysis options*
 
   +  **:header?**: Whether the file has a header on the first line
   +  **:sample-size**: number of lines on which heuristics are applied. Defaults to *100*
   +  **:guess-types?**: Whether to try to guess types for each field. Defaults to *true*
   +  **:skip**: Number of lines to skip before starting to parse. Defaults to 0
 
- *Schema options*
+  *Schema options*
 
   In  a **:fields** key, the seq of fields specs you want to override in the inference process.
   Mostly used to specify manually name of column or type for special needs. The same effect cab be had by editing the resulting spec.
@@ -434,15 +459,15 @@ for the spec. Recognised options are:
   {:fields [{:type :string :field :my-field-name} nil {} {:type :float :field :my-float-field}]}
   ```
 
- *File options*
+  *File options*
 
   +  **:encoding**: Character encoding for the file
 
- *Processing options*
+  *Processing options*
 
   +  **:field-names-fn**: fn to apply to the name of each field. Defaults to trim function
 
- *Format options*
+  *Format options*
 
   +  **:delimiter**: Character used as a delimiter"
   ([uri
@@ -456,86 +481,97 @@ for the spec. Recognised options are:
    (let [norm-opts (normalize-csv-options opts)
          fields-seq (:fields norm-opts)
          [^BufferedReader rdr clean-rdr enc bom-name] (get-reader uri encoding bom)]
-       (try
-         (when (and skip (> skip 0)) (dotimes [_ skip] (.readLine rdr)))
-         (let [{guessed-schema :fields
-                guessed-delimiter :delimiter
-                guessed-header :header?
-                guessed-quote :quoted?
-                :as analysis} (try
-                                (analyze-csv rdr sample-size)
-                                (catch Exception e
-                                  (throw e)
-                                  {}))
-               given-field-names? (some boolean (map :field (:fields norm-opts)))
-               vec-output? (or (and (not given-field-names?) (false? header?))
-                               (and (not given-field-names?) (not guessed-header) (not header?)))
-               fnames (when-not vec-output?
-                        (if (and fields-seq (every? #(or (:field %) (nil? %)) fields-seq))
-                          (map :field fields-seq)
-                          (when (or header? guessed-header given-field-names?)
-                            (let [raw-headers (:possible-header analysis)
-                                  fname-fn (cond
-                                             field-names-fn field-names-fn
-                                             (false? header?) (if (every? keyword?
-                                                                          (remove nil?
-                                                                                  (map :field fields-seq)))
-                                                                keyword
-                                                                identity)
-                                             (not (some (fn [col]
-                                                          (if (nil? col)
-                                                            false
-                                                            (re-find #"[\s':\\/@\(\)]" col))) raw-headers)) keyword
-                                             :else identity)]
-                              (for [[idx raw-header] (map-indexed (fn [idx v] [idx v]) raw-headers)
-                                    :let [trimmed-header (if (seq raw-header)
-                                                           (str/trim raw-header)
-                                                           ::null)
-                                          given-field (nth fields-seq idx ::not-found)
-                                          given-field-label (:field given-field ::not-found)]]
-                                (cond
-                                  (and given-field
-                                       (not (or (map? given-field) (= ::not-found given-field))))
-                                  (:field given-field)
+     (try
+       (when (and skip (> skip 0)) (dotimes [_ skip] (.readLine rdr)))
+       (let [{guessed-schema :fields
+              guessed-delimiter :delimiter
+              guessed-header :header?
+              guessed-quote :quoted?
+              :as analysis} (try
+                              (analyze-csv rdr sample-size)
+                              (catch Exception e
+                                (throw e)
+                                {}))
+             given-field-names? (some boolean (map :field (:fields norm-opts)))
+             vec-output? (or (and (not given-field-names?) (false? header?))
+                             (and (not given-field-names?) (not guessed-header) (not header?)))
+             fnames (when-not vec-output?
+                      (if (and fields-seq (every? #(or (:field %) (nil? %)) fields-seq))
+                        (map :field fields-seq)
+                        (when (or header? guessed-header given-field-names?)
+                          (let [raw-headers (:possible-header analysis)
+                                fname-fn (cond
+                                           field-names-fn field-names-fn
+                                           (false? header?) (if (every? keyword?
+                                                                        (remove nil?
+                                                                                (map :field fields-seq)))
+                                                              keyword
+                                                              identity)
+                                           (not (some (fn [col]
+                                                        (if (nil? col)
+                                                          false
+                                                          (re-find #"[\s':\\/@\(\)]" col))) raw-headers)) keyword
+                                           :else identity)]
+                            (for [[idx raw-header] (map-indexed (fn [idx v] [idx v]) raw-headers)
+                                  :let [trimmed-header (if (seq raw-header)
+                                                         (str/trim raw-header)
+                                                         ::null)
+                                        given-field (nth fields-seq idx ::not-found)
+                                        given-field-label (:field given-field ::not-found)]]
+                              (cond
+                                (and given-field
+                                     (not (or (map? given-field) (= ::not-found given-field))))
+                                (:field given-field)
 
-                                  (and (or (= trimmed-header ::null) (false? header?))
-                                       (= given-field-label ::not-found)) (fname-fn (str "col" idx))
+                                (and (or (= trimmed-header ::null) (false? header?))
+                                     (= given-field-label ::not-found)) (fname-fn (str "col" idx))
 
-                                  trimmed-header (fname-fn trimmed-header)
-                                  (= given-field ::not-found) nil))))))
-               full-schema (for [idx (range (max ((fnil count []) (:fields norm-opts))
-                                                 ((fnil count []) fnames)
-                                                 ((fnil count []) guessed-schema)))]
-                             (let [guessed-type (nth guessed-schema idx ::not-found)
-                                   given-field (nth fields-seq idx ::not-found)
-                                   label (nth fnames idx ::not-found)]
-                               (if (or (nil? label) (nil? given-field))
-                                 nil
-                                 (-> {}
-                                     (cond-> (not= label ::not-found) (assoc :field label))
-                                     (cond-> (and guess-types? (not= guessed-type ::not-found))
-                                       (merge guessed-type))
-                                     (cond-> (not= given-field ::not-found) (merge given-field))
-                                     (update :type #(if (keyword? %) % :string))))))]
-           {:fields (into [] full-schema) :delimiter (or delimiter guessed-delimiter) :bom bom-name
-            :encoding enc :skip-analysis? true :header? (if (nil? header?) guessed-header header?)
-            :quoted? guessed-quote})
-         (finally
-           (clean-rdr rdr)))))
+                                trimmed-header (fname-fn trimmed-header)
+                                (= given-field ::not-found) nil))))))
+             full-schema (for [idx (range (max ((fnil count []) (:fields norm-opts))
+                                               ((fnil count []) fnames)
+                                               ((fnil count []) guessed-schema)))]
+                           (let [guessed-type (nth guessed-schema idx ::not-found)
+                                 given-field (nth fields-seq idx ::not-found)
+                                 label (nth fnames idx ::not-found)]
+                             (if (or (nil? label) (nil? given-field))
+                               nil
+                               (-> {}
+                                   (cond-> (not= label ::not-found) (assoc :field label))
+                                   (cond-> (and guess-types? (not= guessed-type ::not-found))
+                                     (merge guessed-type))
+                                   (cond-> (not= given-field ::not-found) (merge given-field))
+                                   (update :type #(if (keyword? %) % :string))))))]
+         {:fields (into [] full-schema) :delimiter (or delimiter guessed-delimiter) :bom bom-name
+          :encoding enc :skip-analysis? true :header? (if (nil? header?) guessed-header header?)
+          :quoted? guessed-quote})
+       (finally
+         (clean-rdr rdr)))))
   ([uri] (guess-spec uri {})))
 
 (defn ^:no-doc parse-csv
   [^java.io.Reader rdr clean-rdr csv-opts]
-  (let [csv-rdr (make-csv-reader csv-opts)
-        lazy-parse-csv (fn lazy-parse-csv [^CsvParser parser]
-                         (lazy-seq
-                          (if-let [row (.nextRow parser)]
-                            (cons (row->clj row csv-opts) (lazy-parse-csv parser)))))]
-    (lazy-parse-csv (.parse csv-rdr rdr))))
+  #?(:bb
+     (let [row-seq (apply csv/read-csv rdr :separator (:delimiter csv-opts)
+                          (if (:quoted? csv-opts) [:quote \"] []))
+           vec-output? (not (every? (fn [f] (if (map? f) (:field f) true)) (:fields csv-opts)))
+           ks (into [] (map :field (:fields csv-opts)))]
+       (->> row-seq
+            (drop (if (:header? csv-opts) 1 0))
+            (map #(row->clj % csv-opts))))
+     :clj
+     (let [csv-rdr (make-csv-reader csv-opts)
+           lazy-parse-csv (fn lazy-parse-csv [^CsvParser parser]
+                            (lazy-seq
+                             (when-let [row (.nextRow parser)]
+                               (cons (row->clj row csv-opts) (lazy-parse-csv parser)))))]
+       (lazy-parse-csv (.parse csv-rdr rdr)))))
 
-(s/fdef read-csv
-  :args (s/cat :input ::csv-source
-               :options (s/? ::read-csv-args)))
+#?(:bb nil
+   :clj
+   (s/fdef read-csv
+     :args (s/cat :input ::csv-source
+                  :options (s/? ::read-csv-args))))
 
 (defn read-csv
   "This function takes a source of csv lines (either a *Reader*, *InputStream* or *String* URI)
