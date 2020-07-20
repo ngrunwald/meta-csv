@@ -638,6 +638,7 @@
                               (do
                                 (when-not (or (instance? String uri)
                                               (instance? Reader uri)
+                                              (instance? java.net.URL uri)
                                               (instance? java.io.File uri))
                                   (throw (ex-info "Cannot guess the specs of inputs that are neither String path nor File" {:uri uri})))
                                 (guess-spec uri opts))))
