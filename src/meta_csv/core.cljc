@@ -4,7 +4,8 @@
             [clojure.spec.alpha :as s]
             [meta-csv.parser :as parser]
             [medley.core :as med])
-  (:import [java.io Reader PushbackReader File StringReader]
+  (:import [java.io Reader BufferedReader File StringReader]
+           [java.util Collection]
            #?@(:bb []
                :clj [[com.ibm.icu.text CharsetDetector]
                      [java.nio.charset Charset]])))
@@ -53,8 +54,8 @@
 
 (def ^:no-doc other-types
   {:float   {:predicate float-string?
-             :coercer #?(:bb #(Double/parseDouble %)
-                         :clj #(Float/parseFloat %))}
+             #?@(:bb [:coercer #(Double/parseDouble %)]
+                 :clj [:coercer #(Float/parseFloat %)])}
    :integer {:predicate integer-string?
              :coercer #(Integer/parseInt %)}})
 
@@ -89,8 +90,7 @@
    [(byte -2) (byte -1)] [:utf16-be 2]
    [(byte -17) (byte -69) (byte -65)] [:utf8 3]
    [(byte -1) (byte -2) (byte 0) (byte 0)] [:utf32-le 4]
-   [(byte 0) (byte 0) (byte -2) (byte -1)] [:utf32-be 4]
-   [] [:none 0]})
+   [(byte 0) (byte 0) (byte -2) (byte -1)] [:utf32-be 4]})
 
 (def ^:no-doc bom-names
   (reduce (fn
@@ -118,7 +118,7 @@
     (let [[a b c _ :as first-four] (into [] (seq bom))
           first-two [a b]
           first-three [a b c]
-          [bom-name bom-size] (or (boms first-two) (boms first-three) (boms first-four))]
+          [bom-name bom-size] (or (boms first-two) (boms first-three) (boms first-four) [:none 0])]
       bom-name)))
 
 (defn analyze-file [f]
@@ -128,17 +128,17 @@
     {:encoding enc :bom bom-name :path f}))
 
 (defn file-reader
-  [{:keys [encoding bom path skip-lines]}]
+  [{:keys [encoding bom path skip-lines]
+    :or {skip-lines 0}}]
   (let [istream (if (and bom (not= bom :none))
                   (let [bom-size (bom-sizes bom)
                         stream (io/input-stream path)]
                     (.read stream (byte-array bom-size))
                     stream)
                   (io/input-stream path))
-        rdr (io/reader istream :encoding encoding)]
-    (when skip-lines
-      (dotimes [_ skip-lines]
-        (.readLine rdr)))
+        ^BufferedReader rdr (io/reader istream :encoding encoding)]
+    (dotimes [_ skip-lines]
+      (.readLine rdr))
     rdr))
 
 #?(:bb nil
@@ -230,7 +230,7 @@
              let [kname (if named-fields? (field-names-fn field) idx)
                   ^String v (row row-idx)
                   preproc-v (preprocess-fn v)
-                  filter-v (if (and null preproc-v
+                  ^Collection filter-v (if (and null preproc-v
                                     (if (set? null) (null preproc-v) (= preproc-v null)))
                              nil
                              preproc-v)
@@ -284,8 +284,7 @@
 (defn ^:no-doc sample-records
   [input delimiters-set options]
   (let [new-reader-fn (if (map? input)
-                        (fn [i] (let [{:keys [encoding bom path]} i]
-                                  (io/reader path :encoding encoding)))
+                        file-reader
                         (fn [i] (StringReader. i)))]
     (loop [delimiters delimiters-set
            candidates nil]
@@ -436,7 +435,6 @@
          {guessed-schema    :fields-schema
           guessed-delimiter :delimiter
           guessed-header    :header?
-          guessed-quote     :quoted?
           :as               analysis}     (analyze-csv file-data)
          given-field-names? (some boolean (map :field (:fields norm-opts)))
          vec-output? (or (and (not given-field-names?) (false? header?))
@@ -493,7 +491,7 @@
              :delimiter      (or delimiter guessed-delimiter)
              :skip-analysis? true
              :header?        (if (nil? header?) guessed-header header?)
-             :quoted?        guessed-quote})))
+             :ignore-quotes? ignore-quotes?})))
   ([path] (guess-spec path {})))
 
 ;; (defn ^:no-doc parse-csv
@@ -520,7 +518,7 @@
      :args (s/cat :input ::csv-source
                   :options (s/? ::read-csv-args))))
 
-(defn read-csv
+(defn read-csv-file
   "This function takes a source of csv lines (either a *Reader*, *InputStream* or *String* URI)
   and returns the parsed results. If headers are found on the file or field names where given
   as options, it will return a collection of one map per line, associating each field name with
@@ -591,10 +589,12 @@
            rdr (file-reader {:path (str input) :encoding encoding :bom bom :skip-lines skip-lines})
            given-field-names? (some boolean (map :field (:fields full-spec)))
            named-fields? (or header? given-field-names?)
-           csv-opts (merge opts full-spec {:named-fields? named-fields?})]
-       (when (and skip-lines (> skip-lines 0)) (dotimes [_ skip-lines] (.readLine rdr)))
-       (map (fn [row] (row->clj row csv-opts)) (rest (parser/lazy-read rdr (:delimiter csv-opts) csv-opts)))))
-  ([input] (read-csv input {})))
+           csv-opts (merge opts full-spec {:named-fields? named-fields?})
+           raw-records (parser/lazy-read rdr (:delimiter csv-opts) csv-opts)]
+       (map (fn [row] (row->clj row csv-opts)) (if (:header? csv-opts) (rest raw-records) raw-records))))
+  ([input] (read-csv-file input {})))
+
+(def ^:deprecated read-csv read-csv-file)
 
 ;; (defn write-csv
 ;;   [input data {:keys [encoding fields delimiter headers?]

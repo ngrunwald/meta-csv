@@ -3,4 +3,6 @@
         medley/medley {:mvn/version "1.4.0"}
         com.ibm.icu/icu4j {:mvn/version "71.1"}}
  :aliases {:readme {:extra-deps {seancorfield/readme {:mvn/version "1.0.13"}}
-                    :main-opts ["-m" "seancorfield.readme"]}}}
+                    :main-opts ["-m" "seancorfield.readme"]}
+           :test {:extra-deps {metosin/testit {:mvn/version "0.4.1"}}
+                  :extra-paths ["test"]}}}

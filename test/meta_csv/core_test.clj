@@ -1,7 +1,7 @@
 (ns meta-csv.core-test
-  (:require [clojure.test :refer :all]
-            [meta-csv.core :refer :all]
-            [testit.core :refer :all]
+  (:require [clojure.test :refer [deftest]]
+            [meta-csv.core :refer [guess-spec read-csv]]
+            [testit.core :refer [facts fact => =in=> ...]]
             [clojure.string :as str]
             [clojure.spec.test.alpha :as stest]))
 
@@ -14,7 +14,7 @@
                                          {:guess-types? false})]
     (facts "guess-spec auto"
 
-           marine-spec =>
+           marine-spec =in=>
            {:fields
             [{:field :year, :type :long}
              {:field :category, :type :string}
@@ -28,10 +28,9 @@
             :bom :none,
             :encoding "ISO-8859-1",
             :skip-analysis? true,
-            :header? true,
-            :quoted? false}
+            :header? true,}
 
-           card-spec =>
+           card-spec =in=>
            {:fields
             [{:field :Series_reference, :type :string}
              {:field :Period, :type :double}
@@ -51,8 +50,7 @@
             :bom :none,
             :encoding "ISO-8859-1",
             :skip-analysis? true,
-            :header? true,
-            :quoted? false})
+            :header? true,})
 
     (facts "override some specs"
            (guess-spec "./dev-resources/samples/marine-economy-2007-18.csv"
@@ -68,7 +66,7 @@
            {:delimiter \;}
 
            (guess-spec "./dev-resources/samples/marine-economy-2007-18.csv"
-                       {:skip 1}) =in=>
+                       {:skip-lines 1}) =in=>
            {:header? false}
 
            (guess-spec "./dev-resources/samples/marine-economy-2007-18.csv"
@@ -82,28 +80,28 @@
                      {:field :data_value, :type :double}
                      nil]}))
 
-  (let [marine-spec (guess-spec "./dev-resources/samples/marine-economy-2007-18.csv" {:header? false, :skip 1})]
+  (let [marine-spec (guess-spec "./dev-resources/samples/marine-economy-2007-18.csv" {:header? false, :skip-lines 1})]
     (fact "guess-spec auto without fieldnames"
-          marine-spec => {:fields
-                          [{:type :long}
-                           {:type :string}
-                           {:type :string}
-                           {:type :string}
-                           {:type :string}
-                           {:type :string}
-                           {:type :double}
-                           {:type :string}],
-                          :delimiter \,,
-                          :bom :none,
-                          :encoding "ISO-8859-1",
-                          :skip-analysis? true,
-                          :header? false,
-                          :quoted? false})))
+          marine-spec =in=> {:fields
+                             [{:type :long}
+                              {:type :string}
+                              {:type :string}
+                              {:type :string}
+                              {:type :string}
+                              {:type :string}
+                              {:type :double}
+                              {:type :string}],
+                             :delimiter \,,
+                             :bom :none,
+                             :encoding "ISO-8859-1",
+                             :skip-analysis? true,
+                             :header? false})))
 
 (deftest read-csv-test
 
+
   (let [results (read-csv "./dev-resources/samples/marine-economy-2007-18.csv"
-                          {:skip 1 :header? false})]
+                          {:skip-lines 1 :header? false})]
     (facts "results as array"
            results =in=> [[2007
                            "Fisheries and aquaculture"
