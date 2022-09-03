@@ -70,20 +70,21 @@
                                     :clj (into #{} (.keySet (Charset/availableCharsets)))))
 
 (defn ^:no-doc guess-charset
-  [^java.io.InputStream is]
+  [f]
   #?(:bb "UTF-8" ;; use file -bi later if present to try a guess
      :clj
-     (try
-       (let [^CharsetDetector detector (CharsetDetector.)]
-         (.enableInputFilter detector true)
-         (.setText detector is)
-         (let [m (.detect detector)
-               encoding (.getName m)]
-           (if (available-charsets encoding)
-             encoding
-             "UTF-8")))
-       (catch Exception _
-         "UTF-8"))))
+     (with-open [is (io/input-stream f)]
+       (try
+         (let [^CharsetDetector detector (CharsetDetector.)]
+           (.enableInputFilter detector true)
+           (.setText detector is)
+           (let [m (.detect detector)
+                 encoding (.getName m)]
+             (if (available-charsets encoding)
+               encoding
+               "UTF-8")))
+         (catch Exception _
+           "UTF-8")))))
 
 (def ^:no-doc boms
   {[(byte -1) (byte -2)] [:utf16-le 2]
@@ -112,19 +113,18 @@
 
 (defn ^:no-doc guess-bom
   [f]
-  (let [stream (io/input-stream f)
-        bom (byte-array 4)]
-    (.read stream bom)
-    (let [[a b c _ :as first-four] (into [] (seq bom))
-          first-two [a b]
-          first-three [a b c]
-          [bom-name bom-size] (or (boms first-two) (boms first-three) (boms first-four) [:none 0])]
-      bom-name)))
+  (with-open [stream (io/input-stream f)]
+    (let [bom (byte-array 4)]
+      (.read stream bom)
+      (let [[a b c _ :as first-four] (into [] (seq bom))
+            first-two [a b]
+            first-three [a b c]
+            [bom-name bom-size] (or (boms first-two) (boms first-three) (boms first-four) [:none 0])]
+        bom-name))))
 
 (defn analyze-file [f]
-  (let [istream (io/input-stream f)
-        enc (guess-charset istream)
-        bom-name (guess-bom istream)]
+  (let [enc (guess-charset f)
+        bom-name (guess-bom f)]
     {:encoding enc :bom bom-name :path f}))
 
 (defn file-reader
@@ -182,13 +182,6 @@
               true)))
         false))))
 
-;; (defn ^:no-doc is-quoted?
-;;   [lines delimiter]
-;;   (let [quoted-delim (java.util.regex.Pattern/quote (str delimiter))
-;;         regexp (re-pattern (str (format "\"%s|%s\"" quoted-delim quoted-delim)))]
-;;     ;; skip the first line in case it's a header
-;;     (every? #(re-find regexp %) (take 10 (rest lines)))))
-
 (defn ^:no-doc find-char-pos
   [^String raw-record char]
   (loop [found []
@@ -215,46 +208,46 @@
 (defn ^:no-doc row->clj
   [row
    {:keys [fields field-names-fn named-fields? null]}]
-  (try
-    (loop [todo fields
-           row-idx 0
-           idx 0
-           acc (transient [])]
-      (if (seq todo)
-        (let [{:keys [field type skip? postprocess-fn preprocess-fn]
-               :or {postprocess-fn default-postprocess-fn
-                    preprocess-fn default-preprocess-fn} :as spec} (first todo)]
-          (if (or skip? (nil? spec))
-            (recur (rest todo) (inc row-idx) idx acc)
-            (
-             let [kname (if named-fields? (field-names-fn field) idx)
-                  ^String v (row row-idx)
-                  preproc-v (preprocess-fn v)
-                  ^Collection filter-v (if (and null preproc-v
-                                    (if (set? null) (null preproc-v) (= preproc-v null)))
-                             nil
-                             preproc-v)
-                  {:keys [coercer]} (type csv-types)
-                  coerced (if (and filter-v (not (.isEmpty filter-v)))
-                            (coercer preproc-v)
-                            nil)
-                  transformed (when coerced (postprocess-fn coerced))]
-              (recur (rest todo)
-                     (inc row-idx)
-                     (inc idx)
-                     (if named-fields?
-                       (-> acc (conj! kname) (conj! transformed))
-                       (assoc! acc kname transformed))))))
-        (with-meta
-          (if named-fields?
-            (apply array-map (persistent! acc))
-            (persistent! acc))
-          {})))
-    (catch Exception e
-      (let [line-number nil]
-        (throw (ex-info (str "Error reading row " line-number)
-                        {:line-number line-number}
-                       e))))))
+  (let [{:keys [quoted-fields] :as record} (meta row)]
+    (try
+      (loop [todo fields
+             row-idx 0
+             idx 0
+             acc (transient [])]
+        (if (seq todo)
+          (let [{:keys [field type skip? postprocess-fn preprocess-fn]
+                 :or {postprocess-fn default-postprocess-fn
+                      preprocess-fn (if (quoted-fields row-idx) identity default-preprocess-fn)} :as spec} (first todo)]
+            (if (or skip? (nil? spec))
+              (recur (rest todo) (inc row-idx) idx acc)
+              (let [kname (if named-fields? (field-names-fn field) idx)
+                    ^String v (row row-idx)
+                    preproc-v (preprocess-fn v)
+                    ^String filter-v (if (and null preproc-v
+                                              (if (set? null) (null preproc-v) (= preproc-v null)))
+                                       nil
+                                       preproc-v)
+                    {:keys [coercer]} (type csv-types)
+                    coerced (if (and filter-v (not (.isEmpty filter-v)))
+                              (coercer preproc-v)
+                              nil)
+                    transformed (when coerced (postprocess-fn coerced))]
+               (recur (rest todo)
+                      (inc row-idx)
+                      (inc idx)
+                      (if named-fields?
+                        (-> acc (conj! kname) (conj! transformed))
+                        (assoc! acc kname transformed))))))
+          (with-meta
+            (if named-fields?
+              (apply array-map (persistent! acc))
+              (persistent! acc))
+            {})))
+      (catch Exception e
+        (let [line-number nil]
+          (throw (ex-info (str "Error reading row " line-number)
+                          {:line-number line-number}
+                          e)))))))
 
 (defn ^:no-doc take-higher-priority
   [cands]
@@ -566,14 +559,14 @@
  +  **delimiter**: Character used as a delimiter"
   ([input
     {:keys [header? field-names-fn fields encoding
-            guess-types?
+            guess-types? greedy?
             skip-analysis?
             bom skip-lines]
      :or {guess-types? true
           skip-lines 0}
      :as opts}]
      (let [{:keys [header? fields field-names-fn encoding
-                   guess-types? greedy?
+                   guess-types?
                    limit skip-analysis? bom]
             :or {guess-types? true
                  field-names-fn str/trim}
@@ -590,8 +583,13 @@
            given-field-names? (some boolean (map :field (:fields full-spec)))
            named-fields? (or header? given-field-names?)
            csv-opts (merge opts full-spec {:named-fields? named-fields?})
-           raw-records (parser/lazy-read rdr (:delimiter csv-opts) csv-opts)]
-       (map (fn [row] (row->clj row csv-opts)) (if (:header? csv-opts) (rest raw-records) raw-records))))
+           starting-line (+ skip-lines (if header? 1 0))
+           read-fn (if greedy? parser/greedy-read parser/lazy-read)
+           map-fn (if greedy? mapv map)
+           raw-records (read-fn rdr (:delimiter csv-opts) (assoc csv-opts :line-number starting-line))]
+       (map-fn (fn [row] (let [{:keys [starting-line]} (meta row)]
+                           (vary-meta (row->clj row csv-opts) assoc :starting-line starting-line)))
+            (if (:header? csv-opts) (rest raw-records) raw-records))))
   ([input] (read-csv-file input {})))
 
 (def ^:deprecated read-csv read-csv-file)

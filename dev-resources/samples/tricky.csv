@@ -1,0 +1,7 @@
+str1,str2,num,str3
+foo , "bar" , 42 ,"baz"
+foo,  bar,  42, "baz"
+" foo" ," ""bar """,42,baz
+" foo" ," ""bar """,42,baz
+" foo " ," ""bar """,42,baz
+"foo " ," "" bar "" ",42,baz

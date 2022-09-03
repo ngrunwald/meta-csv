@@ -1,6 +1,6 @@
 (ns meta-csv.core-test
   (:require [clojure.test :refer [deftest]]
-            [meta-csv.core :refer [guess-spec read-csv]]
+            [meta-csv.core :refer [guess-spec read-csv read-csv-file]]
             [testit.core :refer [facts fact => =in=> ...]]
             [clojure.string :as str]
             [clojure.spec.test.alpha :as stest]))
@@ -114,6 +114,9 @@
 
            results => seq?))
 
+  (fact "greedy reading"
+    (read-csv "./dev-resources/samples/marine-economy-2007-18.csv" {:greedy? true}) => vector?)
+
   (let [results (read-csv "./dev-resources/samples/marine-economy-2007-18.csv")]
     (facts "base case"
            results =in=> [{:year 2007,
@@ -159,4 +162,14 @@
          (read-csv "./dev-resources/samples/marine-economy-2007-18.csv"
                    {:null "2007"}) =in=> [{:year nil} ...]
          (read-csv "./dev-resources/samples/marine-economy-2007-18.csv"
-                   {:null #{"2007"}}) =in=> [{:year nil} ...]))
+                   {:null #{"2007"}}) =in=> [{:year nil} ...])
+
+  (fact "tricky csv with lots of padding and quotes"
+    (read-csv-file "./dev-resources/samples/tricky.csv") =in=> [["str1" "str2" "num" "str3"]
+                                                                ["foo" "bar" "42" "baz"]
+                                                                ["foo" "bar" "42" "baz"]
+                                                                [" foo" " \"bar \"" "42" "baz"]
+                                                                [" foo" " \"bar \"" "42" "baz"]
+                                                                [" foo " " \"bar \"" "42" "baz"]
+                                                                ["foo " " \" bar \" " "42" "baz"]
+                                                                ...]))
